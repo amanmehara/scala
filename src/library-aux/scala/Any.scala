@@ -27,7 +27,7 @@ package scala
  *     w.print()
  * }}}
  *
- * See the [[http://docs.scala-lang.org/sips/pending/value-classes.html value classes guide]] for more
+ * See the [[http://docs.scala-lang.org/overviews/core/value-classes.html Value Classes and Universal Traits]] for more
  * details on the interplay of universal traits and value classes.
  */
 abstract class Any {
@@ -38,7 +38,7 @@ abstract class Any {
    *  - It is reflexive: for any instance `x` of type `Any`, `x.equals(x)` should return `true`.
    *  - It is symmetric: for any instances `x` and `y` of type `Any`, `x.equals(y)` should return `true` if and
    *    only if `y.equals(x)` returns `true`.
-   *  - It is transitive: for any instances `x`, `y`, and `z` of type `AnyRef` if `x.equals(y)` returns `true` and
+   *  - It is transitive: for any instances `x`, `y`, and `z` of type `Any` if `x.equals(y)` returns `true` and
    *    `y.equals(z)` returns `true`, then `x.equals(z)` should return `true`.
    *
    *  If you override this method, you should verify that your implementation remains an equivalence relation.

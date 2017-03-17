@@ -16,7 +16,7 @@ import scala.annotation.tailrec
 import java.io._
 
 /** A class for immutable linked lists representing ordered collections
- *  of elements of type.
+ *  of elements of type `A`.
  *
  *  This class comes with two implementing case classes `scala.Nil`
  *  and `scala.::` that implement the abstract members `isEmpty`,
@@ -24,6 +24,19 @@ import java.io._
  *
  *  This class is optimal for last-in-first-out (LIFO), stack-like access patterns. If you need another access
  *  pattern, for example, random access or FIFO, consider using a collection more suited to this than `List`.
+ *
+ *  ==Performance==
+ *  '''Time:''' `List` has `O(1)` prepend and head/tail access. Most other operations are `O(n)` on the number of elements in the list.
+ *  This includes the index-based lookup of elements, `length`, `append` and `reverse`.
+ *
+ *  '''Space:''' `List` implements '''structural sharing''' of the tail list. This means that many operations are either
+ *  zero- or constant-memory cost.
+ *  {{{
+ *  val mainList = List(3, 2, 1)
+ *  val with4 =    4 :: mainList  // re-uses mainList, costs one :: instance
+ *  val with42 =   42 :: mainList // also re-uses mainList, cost one :: instance
+ *  val shorter =  mainList.tail  // costs nothing as it uses the same 2::1::Nil instances as mainList
+ *  }}}
  *
  *  @example {{{
  *  // Make a list via the companion object factory
@@ -39,19 +52,6 @@ import java.io._
  *    case List() =>
  *      println("There don't seem to be any week days.")
  *  }
- *  }}}
- *
- *  ==Performance==
- *  '''Time:''' `List` has `O(1)` prepend and head/tail access. Most other operations are `O(n)` on the number of elements in the list.
- *  This includes the index-based lookup of elements, `length`, `append` and `reverse`.
- *
- *  '''Space:''' `List` implements '''structural sharing''' of the tail list. This means that many operations are either
- *  zero- or constant-memory cost.
- *  {{{
- *  val mainList = List(3, 2, 1)
- *  val with4 =    4 :: mainList  // re-uses mainList, costs one :: instance
- *  val with42 =   42 :: mainList // also re-uses mainList, cost one :: instance
- *  val shorter =  mainList.tail  // costs nothing as it uses the same 2::1::Nil instances as mainList
  *  }}}
  *
  *  @note The functional list is characterized by persistence and structural sharing, thus offering considerable
@@ -86,6 +86,7 @@ sealed abstract class List[+A] extends AbstractSeq[A]
                                   with Product
                                   with GenericTraversableTemplate[A, List]
                                   with LinearSeqOptimized[A, List[A]]
+                                  with FilteredTraversableInternal[A, List[A]]
                                   with Serializable {
   override def companion: GenericCompanion[List] = List
 
@@ -163,30 +164,41 @@ sealed abstract class List[+A] extends AbstractSeq[A]
     // Note to developers: there exists a duplication between this function and `reflect.internal.util.Collections#map2Conserve`.
     // If any successful optimization attempts or other changes are made, please rehash them there too.
     @tailrec
-    def loop(mapped: ListBuffer[B], unchanged: List[A], pending: List[A]): List[B] =
-      if (pending.isEmpty) {
-        if (mapped eq null) unchanged
-        else mapped.prependToList(unchanged)
-      }
+    def loop(mappedHead: List[B] = Nil, mappedLast: ::[B], unchanged: List[A], pending: List[A]): List[B] =
+    if (pending.isEmpty) {
+      if (mappedHead eq null) unchanged
       else {
-        val head0 = pending.head
-        val head1 = f(head0)
-
-        if (head1 eq head0.asInstanceOf[AnyRef])
-          loop(mapped, unchanged, pending.tail)
-        else {
-          val b = if (mapped eq null) new ListBuffer[B] else mapped
-          var xc = unchanged
-          while (xc ne pending) {
-            b += xc.head
-            xc = xc.tail
-          }
-          b += head1
-          val tail0 = pending.tail
-          loop(b, tail0, tail0)
-        }
+        mappedLast.tl = unchanged
+        mappedHead
       }
-    loop(null, this, this)
+    }
+    else {
+      val head0 = pending.head
+      val head1 = f(head0)
+
+      if (head1 eq head0.asInstanceOf[AnyRef])
+        loop(mappedHead, mappedLast, unchanged, pending.tail)
+      else {
+        var xc = unchanged
+        var mappedHead1: List[B] = mappedHead
+        var mappedLast1: ::[B] = mappedLast
+        while (xc ne pending) {
+          val next = new ::[B](xc.head, Nil)
+          if (mappedHead1 eq null) mappedHead1 = next
+          if (mappedLast1 ne null) mappedLast1.tl = next
+          mappedLast1 = next
+          xc = xc.tail
+        }
+        val next = new ::(head1, Nil)
+        if (mappedHead1 eq null) mappedHead1 = next
+        if (mappedLast1 ne null) mappedLast1.tl = next
+        mappedLast1 = next
+        val tail0 = pending.tail
+        loop(mappedHead1, mappedLast1, tail0, tail0)
+
+      }
+    }
+    loop(null, null, this, this)
   }
 
   // Overridden methods from IterableLike and SeqLike or overloaded variants of such methods
@@ -405,6 +417,7 @@ sealed abstract class List[+A] extends AbstractSeq[A]
   // Create a proxy for Java serialization that allows us to avoid mutation
   // during de-serialization.  This is the Serialization Proxy Pattern.
   protected final def writeReplace(): AnyRef = new List.SerializationProxy(this)
+
 }
 
 /** The empty list.
@@ -462,6 +475,7 @@ object List extends SeqFactory[List] {
   private class SerializationProxy[A](@transient private var orig: List[A]) extends Serializable {
 
     private def writeObject(out: ObjectOutputStream) {
+      out.defaultWriteObject()
       var xs: List[A] = orig
       while (!xs.isEmpty) {
         out.writeObject(xs.head)
@@ -473,6 +487,7 @@ object List extends SeqFactory[List] {
     // Java serialization calls this before readResolve during de-serialization.
     // Read the whole list and store it in `orig`.
     private def readObject(in: ObjectInputStream) {
+      in.defaultReadObject()
       val builder = List.newBuilder[A]
       while (true) in.readObject match {
         case ListSerializeEnd =>

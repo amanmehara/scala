@@ -317,12 +317,12 @@ trait Reifiers { self: Quasiquotes =>
      *  Reification of non-trivial list is done in two steps:
      *
      *  1. split the list into groups where every placeholder is always
-     *     put in a group of its own and all subsquent non-holeMap are
+     *     put in a group of its own and all subsequent non-holeMap are
      *     grouped together; element is considered to be a placeholder if it's
      *     in the domain of the fill function;
      *
      *  2. fold the groups into a sequence of lists added together with ++ using
-     *     fill reification for holeMap and fallback reification for non-holeMap.
+     *     fill reification for holeMap and fallback reification for non-holeMap.
      *
      *  Example:
      *

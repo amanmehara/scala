@@ -184,7 +184,7 @@ TODO:
 
   <property name="dists.dir"               value="${basedir}/dists"/>
 
-  <property name="copyright.string"        value="Copyright 2002-2013, LAMP/EPFL"/>
+  <property name="copyright.string"        value="Copyright 2002-2017, LAMP/EPFL"/>
 
   <!-- These are NOT the flags used to run SuperSabbus, but the ones written
        into the script runners created with scala.tools.ant.ScalaTool -->
@@ -275,6 +275,14 @@ TODO:
         <dependency groupId="biz.aQute" artifactId="bnd" version="1.50.0"/>
       </artifact:dependencies>
 
+      <artifact:dependencies pathId="jarjar.classpath">
+        <dependency groupId="com.googlecode.jarjar" artifactId="jarjar" version="1.3"/>
+      </artifact:dependencies>
+
+      <artifact:dependencies pathId="jarlister.classpath">
+        <dependency groupId="com.github.rjolly" artifactId="jarlister_2.11" version="1.0"/>
+      </artifact:dependencies>
+
       <!-- JUnit -->
       <property name="junit.version" value="4.11"/>
       <artifact:dependencies pathId="junit.classpath" filesetId="junit.fileset">
@@ -313,7 +321,7 @@ TODO:
 
       <!-- scala-java8-compat, used by the experimental -target jvm-1.8 support. -->
       <if><isset property="scala-java8-compat.package"/><then>
-        <property name="scala-java8-compat.version" value="0.4.0"/>
+        <property name="scala-java8-compat.version" value="0.5.0"/>
         <property name="scala-java8-compat.binary.version" value="2.11"/>
         <artifact:dependencies pathId="scala-java8-compat.classpath" filesetId="scala-java8-compat.fileset">
           <dependency groupId="org.scala-lang.modules" artifactId="scala-java8-compat_${scala-java8-compat.binary.version}" version="${scala-java8-compat.version}">
@@ -502,6 +510,11 @@ TODO:
     </condition>
 
     <fail if="has.unsupported.jdk" message="JDK ${ant.java.version} is not supported by this build!"/>
+    <fail message="Ant 1.9+ required">
+      <condition>
+        <not><antversion atleast="1.9" /></not>
+      </condition>
+    </fail>
 
     <!-- Allow this to be overridden simply -->
     <property name="sbt.latest.version"    value="0.12.4"/>
@@ -525,6 +538,8 @@ TODO:
     <property name="scalac.args.locker"    value="${scalac.args.all}"/>
     <property name="scalac.args.quick"     value="${scalac.args.all}"/>
     <property name="scalac.args.strap"     value="${scalac.args.quick}"/>
+
+    <property name="partest.scalac_opts"   value=""/> <!-- set default value, otherwise the property name will be passed to partest if undefined -->
 
     <!-- This is the start time for the distribution -->
     <tstamp prefix="time">
@@ -696,7 +711,7 @@ TODO:
     <property name="partest-javaagent.description" value="Scala Compiler Testing Tool (compiler-specific java agent)"/>
 
     <!-- projects without project-specific options: forkjoin, manual, bin, repl -->
-    <for list="actors,compiler,interactive,scaladoc,library,parser-combinators,partest,partest-extras,partest-javaagent,reflect,scalap,swing,xml,continuations-plugin,continuations-library" param="project">
+    <for list="actors,compiler,interactive,scaladoc,library,parser-combinators,partest,partest-extras,partest-javaagent,reflect,scalap,swing,xml,continuations-plugin,continuations-library,repl-jline" param="project">
       <sequential>
         <!-- description is mandatory -->
         <init-project-prop project="@{project}" name="package"     default=""/> <!-- used by mvn-package, copy-bundle, make-bundle -->
@@ -798,7 +813,13 @@ TODO:
 
     <path id="quick.repl.build.path">
       <path refid="quick.compiler.build.path"/>
+      <path refid="quick.interactive.build.path"/>
       <pathelement location="${build-quick.dir}/classes/repl"/>
+    </path>
+
+    <path id="quick.repl-jline.build.path">
+      <path refid="quick.repl.build.path"/>
+      <pathelement location="${build-quick.dir}/classes/repl-jline"/>
       <path refid="repl.deps.classpath"/>
     </path>
 
@@ -833,7 +854,7 @@ TODO:
     </path>
 
     <path id="quick.bin.tool.path">
-      <path refid="quick.repl.build.path"/>
+      <path refid="quick.repl-jline.build.path"/>
       <path refid="quick.actors.build.path"/>
       <pathelement location="${build-quick.dir}/classes/scalap"/>
       <pathelement location="${build-quick.dir}/classes/scaladoc"/>
@@ -848,6 +869,11 @@ TODO:
       <pathelement location="${ant.jar}"/>
       <path refid="forkjoin.classpath"/>
       <path refid="aux.libs"/>
+    </path>
+
+    <path id="pack.lib.path">
+      <pathelement location="${library.jar}"/>
+      <path refid="jarlister.classpath"/>
     </path>
 
     <path id="pack.bin.tool.path">
@@ -872,6 +898,8 @@ TODO:
     <path id="pack.actors.files">
       <fileset dir="${build-quick.dir}/classes/actors"/>
     </path>
+
+    <path id="pack.repl-jline.files">    <fileset dir="${build-quick.dir}/classes/repl-jline"/> </path>
 
     <path id="pack.compiler.files">
       <fileset dir="${build-quick.dir}/classes/compiler"/>
@@ -1076,6 +1104,7 @@ TODO:
     </patternset>
 
     <taskdef resource="scala/tools/ant/sabbus/antlib.xml" classpathref="starr.compiler.path"/>
+    <taskdef name="jarjar" classname="com.tonicsystems.jarjar.JarJarTask" classpathref="jarjar.classpath" />
   </target>
 
 <!-- ===========================================================================
@@ -1156,11 +1185,35 @@ TODO:
   <target name="quick.comp"       depends="quick.reflect">
     <staged-build with="locker"   stage="quick" project="compiler"/> </target>
 
-  <target name="quick.repl"       depends="quick.comp">
-    <staged-build with="locker"   stage="quick" project="repl"/> </target>
+  <target name="quick.repl"       depends="quick.comp, quick.interactive">
+    <staged-build with="locker"   stage="quick" project="repl"/>
+    <staged-build with="locker"   stage="quick" project="repl-jline"/>
+
+    <staged-pack project="repl-jline"/>
+
+    <!-- make jline_embedded jar with classes of repl-jline and jline, then shade-->
+    <jarjar jarfile="${build-pack.dir}/${repl-jline.targetdir}/scala-repl-jline-embedded.jar" whenmanifestonly="fail">
+      <zipfileset src="${jline:jline:jar}"/>
+      <zipfileset src="${build-pack.dir}/${repl-jline.targetdir}/${repl-jline.targetjar}"/>
+
+      <rule pattern="org.fusesource.**" result="scala.tools.fusesource_embedded.@1"/>
+      <rule pattern="jline.**" result="scala.tools.jline_embedded.@1"/>
+      <rule pattern="scala.tools.nsc.interpreter.jline.**" result="scala.tools.nsc.interpreter.jline_embedded.@1"/>
+      <keep pattern="scala.tools.**"/>
+    </jarjar>
+
+    <!-- unzip jar to repl's class dir to obtain
+           - standard repl-jline
+           - a shaded repl-jline (scala/tools/nsc/interpreter/jline_embedded) & jline (scala.tools.jline_embedded)
+    -->
+    <copy todir="${build-quick.dir}/classes/repl">
+      <zipfileset src="${build-pack.dir}/${repl-jline.targetdir}/${repl-jline.targetjar}"/>
+      <zipfileset src="${build-pack.dir}/${repl-jline.targetdir}/scala-repl-jline-embedded.jar"/>
+    </copy>
+  </target>
 
   <target name="quick.scaladoc"   depends="quick.comp">
-    <staged-build with="locker"   stage="quick" project="scaladoc" version="scaladoc"/> </target>
+    <staged-build with="locker"   stage="quick" project="scaladoc"/> </target>
 
   <target name="quick.interactive" depends="quick.comp, quick.scaladoc">
     <staged-build with="locker"    stage="quick" project="interactive"/> </target>
@@ -1186,7 +1239,10 @@ TODO:
 <!-- ===========================================================================
                                   PACKED QUICK BUILD (PACK)
 ============================================================================ -->
-  <target name="pack.lib"    depends="quick.lib, forkjoin.done"> <staged-pack project="library"/></target>
+  <target name="pack.lib" depends="quick.lib, forkjoin.done"> <staged-pack project="library"/>
+    <taskdef resource="scala/tools/ant/antlib.xml" classpathref="pack.lib.path"/>
+    <jarlister file="${library.jar}"/>
+  </target>
 
   <target name="pack.reflect" depends="quick.reflect"> <staged-pack project="reflect"/> </target>
 
@@ -1600,7 +1656,7 @@ TODO:
     <mkdir dir="${bc-build.dir}"/>
     <!-- Pull down MIMA -->
     <artifact:dependencies pathId="mima.classpath">
-      <dependency groupId="com.typesafe" artifactId="mima-reporter_2.10" version="0.1.6"/>
+      <dependency groupId="com.typesafe" artifactId="mima-reporter_2.10" version="0.1.14"/>
     </artifact:dependencies>
     <artifact:dependencies pathId="old.bc.classpath">
       <dependency groupId="org.scala-lang" artifactId="scala-library" version="${bc-reference-version}"/>
@@ -1642,20 +1698,15 @@ TODO:
   <target name="docs.lib" depends="docs.start" unless="docs.skip">
     <staged-docs project="library">
       <include name="**/*.scala"/>
-      <exclude name="runtime/*$.scala"/>
-      <exclude name="runtime/ScalaRunTime.scala"/>
-      <exclude name="runtime/StringAdd.scala"/>
+      <exclude name="**/runtime/*$.scala"/>
+      <exclude name="**/runtime/ScalaRunTime.scala"/>
+      <exclude name="**/runtime/StringAdd.scala"/>
     </staged-docs>
   </target>
 
   <target name="docs.reflect" depends="docs.start" unless="docs.skip">
     <staged-docs project="reflect">
       <include name="**/*.scala"/>
-      <exclude name="reflect/Code.scala"/>
-      <exclude name="reflect/Print.scala"/>
-      <exclude name="reflect/Symbol.scala"/>
-      <exclude name="reflect/Tree.scala"/>
-      <exclude name="reflect/Type.scala"/>
     </staged-docs>
   </target>
 

@@ -12,9 +12,8 @@ import scala.collection.mutable
 import scala.reflect.internal.util.Collections._
 import scala.tools.asm.commons.CodeSizeEvaluator
 import scala.tools.asm.tree.analysis._
-import scala.tools.asm.{MethodWriter, ClassWriter, Label, Opcodes}
+import scala.tools.asm.{MethodWriter, ClassWriter, Label, Opcodes, Type}
 import scala.tools.asm.tree._
-import scala.collection.convert.decorateAsScala._
 import GenBCode._
 import scala.collection.convert.decorateAsScala._
 import scala.collection.convert.decorateAsJava._
@@ -73,10 +72,17 @@ object BytecodeUtils {
     op >= Opcodes.IRETURN && op <= Opcodes.RETURN
   }
 
-  def isVarInstruction(instruction: AbstractInsnNode): Boolean = {
+  def isLoad(instruction: AbstractInsnNode): Boolean = {
     val op = instruction.getOpcode
-    (op >= Opcodes.ILOAD  && op <= Opcodes.ALOAD) || (op >= Opcodes.ISTORE && op <= Opcodes.ASTORE)
+    op >= Opcodes.ILOAD  && op <= Opcodes.ALOAD
   }
+
+  def isStore(instruction: AbstractInsnNode): Boolean = {
+    val op = instruction.getOpcode
+    op >= Opcodes.ISTORE && op <= Opcodes.ASTORE
+  }
+
+  def isVarInstruction(instruction: AbstractInsnNode): Boolean = isLoad(instruction) || isStore(instruction)
 
   def isExecutable(instruction: AbstractInsnNode): Boolean = instruction.getOpcode >= 0
 
@@ -98,6 +104,8 @@ object BytecodeUtils {
 
   def isStrictfpMethod(methodNode: MethodNode): Boolean = (methodNode.access & Opcodes.ACC_STRICT) != 0
 
+  def isReference(t: Type) = t.getSort == Type.OBJECT || t.getSort == Type.ARRAY
+
   def nextExecutableInstruction(instruction: AbstractInsnNode, alsoKeep: AbstractInsnNode => Boolean = Set()): Option[AbstractInsnNode] = {
     var result = instruction
     do { result = result.getNext }
@@ -106,7 +114,7 @@ object BytecodeUtils {
   }
 
   def sameTargetExecutableInstruction(a: JumpInsnNode, b: JumpInsnNode): Boolean = {
-    // Compare next executable instead of the the labels. Identifies a, b as the same target:
+    // Compare next executable instead of the labels. Identifies a, b as the same target:
     //   LabelNode(a)
     //   LabelNode(b)
     //   Instr
@@ -169,6 +177,8 @@ object BytecodeUtils {
     val op = if (size == 1) Opcodes.POP else Opcodes.POP2
     new InsnNode(op)
   }
+
+  def instructionResultSize(instruction: AbstractInsnNode) = InstructionResultSize(instruction)
 
   def labelReferences(method: MethodNode): Map[LabelNode, Set[AnyRef]] = {
     val res = mutable.Map.empty[LabelNode, Set[AnyRef]]
@@ -323,18 +333,63 @@ object BytecodeUtils {
   }
 
   /**
+   * This method is used by optimizer components to eliminate phantom values of instruction
+   * that load a value of type `Nothing$` or `Null$`. Such values on the stack don't interact well
+   * with stack map frames.
+   *
+   * For example, `opt.getOrElse(throw e)` is re-written to an invocation of the lambda body, a
+   * method with return type `Nothing$`. Similarly for `opt.getOrElse(null)` and `Null$`.
+   *
+   * During bytecode generation this is handled by BCodeBodyBuilder.adapt. See the comment in that
+   * method which explains the issue with such phantom values.
+   */
+  def fixLoadedNothingOrNullValue(loadedType: Type, loadInstr: AbstractInsnNode, methodNode: MethodNode, bTypes: BTypes): Unit = {
+    if (loadedType == bTypes.coreBTypes.RT_NOTHING.toASMType) {
+      methodNode.instructions.insert(loadInstr, new InsnNode(Opcodes.ATHROW))
+    } else if (loadedType == bTypes.coreBTypes.RT_NULL.toASMType) {
+      methodNode.instructions.insert(loadInstr, new InsnNode(Opcodes.ACONST_NULL))
+      methodNode.instructions.insert(loadInstr, new InsnNode(Opcodes.POP))
+    }
+  }
+
+  /**
    * A wrapper to make ASM's Analyzer a bit easier to use.
    */
   class AsmAnalyzer[V <: Value](methodNode: MethodNode, classInternalName: InternalName, interpreter: Interpreter[V] = new BasicInterpreter) {
     val analyzer = new Analyzer(interpreter)
     analyzer.analyze(classInternalName, methodNode)
-    def frameAt(instruction: AbstractInsnNode): Frame[V] = analyzer.getFrames()(methodNode.instructions.indexOf(instruction))
+    def frameAt(instruction: AbstractInsnNode): Frame[V] = analyzer.frameAt(instruction, methodNode)
   }
 
-  implicit class `frame extensions`[V <: Value](val frame: Frame[V]) extends AnyVal {
-    def peekDown(n: Int): V = {
-      val topIndex = frame.getStackSize - 1
-      frame.getStack(topIndex - n)
+  implicit class AnalyzerExtensions[V <: Value](val analyzer: Analyzer[V]) extends AnyVal {
+    def frameAt(instruction: AbstractInsnNode, methodNode: MethodNode): Frame[V] = analyzer.getFrames()(methodNode.instructions.indexOf(instruction))
+  }
+
+  implicit class FrameExtensions[V <: Value](val frame: Frame[V]) extends AnyVal {
+    /**
+     * The value `n` positions down the stack.
+     */
+    def peekStack(n: Int): V = frame.getStack(frame.getStackSize - 1 - n)
+
+    /**
+     * The index of the current stack top.
+     */
+    def stackTop = frame.getLocals + frame.getStackSize - 1
+
+    /**
+     * Gets the value at slot i, where i may be a local or a stack index.
+     */
+    def getValue(i: Int): V = {
+      if (i < frame.getLocals) frame.getLocal(i)
+      else frame.getStack(i - frame.getLocals)
+    }
+
+    /**
+     * Sets the value at slot i, where i may be a local or a stack index.
+     */
+    def setValue(i: Int, value: V): Unit = {
+      if (i < frame.getLocals) frame.setLocal(i, value)
+      else frame.setStack(i - frame.getLocals, value)
     }
   }
 }

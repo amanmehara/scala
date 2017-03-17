@@ -512,7 +512,7 @@ In the latter case, the concrete self type of the expression is the
 compound type `$T$ with $x$.type`.
 
 The expression is evaluated by creating a fresh
-object of type $T$ which is is initialized by evaluating $c$. The
+object of type $T$ which is initialized by evaluating $c$. The
 type of the expression is $T$.
 
 A general instance creation expression is of the form
@@ -1341,7 +1341,7 @@ to $U$ after applying [eta-expansion](#eta-expansion) and
 
 ### Value Conversions
 
-The following five implicit conversions can be applied to an
+The following seven implicit conversions can be applied to an
 expression $e$ which has some value type $T$ and which is type-checked with
 some expected type $\mathit{pt}$.
 
@@ -1736,7 +1736,7 @@ so `scala.Any` is the type inferred for `a`.
 _Eta-expansion_ converts an expression of method type to an
 equivalent expression of function type. It proceeds in two steps.
 
-First, one identifes the maximal sub-expressions of $e$; let's
+First, one identifies the maximal sub-expressions of $e$; let's
 say these are $e_1 , \ldots , e_m$. For each of these, one creates a
 fresh name $x_i$. Let $e'$ be the expression resulting from
 replacing every maximal subexpression $e_i$ in $e$ by the

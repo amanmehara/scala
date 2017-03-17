@@ -15,7 +15,6 @@ import scala.language.postfixOps
  *      where the argument is the desired output directory
  *
  *  @author  Burak Emir, Stephane Micheloud, Geoffrey Washburn, Paul Phillips
- *  @version 1.1
  */
 object genprod extends App {
   val MAX_ARITY = 22
@@ -123,7 +122,10 @@ object FunctionOne extends Function(1) {
  *      def apply(x: Int): Int = x + 1
  *    }
  *    assert(succ(0) == anonfun1(0))
- * """)
+ * """) + """
+ *
+ *  Note that the difference between `Function1` and [[scala.PartialFunction]]
+ *  is that the latter can specify inputs which it will not handle."""
 
   override def moreMethods = """
   /** Composes two instances of Function1 in a new Function1, with this function applied last.
@@ -178,13 +180,7 @@ class Function(val i: Int) extends Group("Function") with Arity {
  *
  *  {{{
  *  object Main extends App {%s}
- *  }}}
- *
- *  Note that `Function1` does not define a total function, as might
- *  be suggested by the existence of [[scala.PartialFunction]]. The only
- *  distinction between `Function1` and `PartialFunction` is that the
- *  latter can specify inputs which it will not handle.
-"""
+ *  }}}"""
 
   def toStr() = "\"" + ("<function%d>" format i) + "\""
   def apply() = {
@@ -356,7 +352,7 @@ object ProductTwo extends Product(2)
 
 class Product(val i: Int) extends Group("Product") with Arity {
   val productElementComment = """
-  /** Returns the n-th projection of this product if 0 < n <= productArity,
+  /** Returns the n-th projection of this product if 0 <= n < productArity,
    *  otherwise throws an `IndexOutOfBoundsException`.
    *
    *  @param n number of the projection to be returned

@@ -35,15 +35,14 @@ abstract class BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
   /*
    * must-single-thread
    */
-  def getOutFolder(csym: Symbol, cName: String, cunit: CompilationUnit): _root_.scala.tools.nsc.io.AbstractFile = {
-    try {
+  def getOutFolder(csym: Symbol, cName: String, cunit: CompilationUnit): _root_.scala.tools.nsc.io.AbstractFile =
+    _root_.scala.util.Try {
       outputDirectory(csym)
-    } catch {
+    }.recover {
       case ex: Throwable =>
         reporter.error(cunit.body.pos, s"Couldn't create file for class $cName\n${ex.getMessage}")
         null
-    }
-  }
+    }.get
 
   var pickledBytes = 0 // statistics
 
@@ -329,7 +328,8 @@ abstract class BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
       // If the `sym` is a java module class, we use the java class instead. This ensures that we
       // register the class (instead of the module class) in innerClassBufferASM.
       // The two symbols have the same name, so the resulting internalName is the same.
-      val classSym = if (sym.isJavaDefined && sym.isModuleClass) sym.linkedClassOfClass else sym
+      // Phase travel (exitingPickler) required for SI-6613 - linkedCoC is only reliable in early phases (nesting)
+      val classSym = if (sym.isJavaDefined && sym.isModuleClass) exitingPickler(sym.linkedClassOfClass) else sym
       getClassBTypeAndRegisterInnerClass(classSym).internalName
     }
 
@@ -681,6 +681,60 @@ abstract class BCodeHelpers extends BCodeIdiomatic with BytecodeWriters {
         null, // no java-generic-signature
         new java.lang.Long(id)
       ).visitEnd()
+    }
+
+    /**
+     * Add:
+     * private static java.util.Map $deserializeLambdaCache$ = null
+     * private static Object $deserializeLambda$(SerializedLambda l) {
+     *   var cache = $deserializeLambdaCache$
+     *   if (cache eq null) {
+     *     cache = new java.util.HashMap()
+     *     $deserializeLambdaCache$ = cache
+     *   }
+     *   return scala.compat.java8.runtime.LambdaDeserializer.deserializeLambda(MethodHandles.lookup(), cache, l);
+     * }
+     */
+    def addLambdaDeserialize(clazz: Symbol, jclass: asm.ClassVisitor): Unit = {
+      val cw = jclass
+      import scala.tools.asm.Opcodes._
+
+      // Need to force creation of BTypes for these as `getCommonSuperClass` is called on
+      // automatically computing the max stack size (`visitMaxs`) during method writing.
+      javaUtilHashMapReference
+      javaUtilMapReference
+
+      cw.visitInnerClass("java/lang/invoke/MethodHandles$Lookup", "java/lang/invoke/MethodHandles", "Lookup", ACC_PUBLIC + ACC_FINAL + ACC_STATIC)
+
+      {
+        val fv = cw.visitField(ACC_PRIVATE + ACC_STATIC + ACC_SYNTHETIC, "$deserializeLambdaCache$", "Ljava/util/Map;", null, null)
+        fv.visitEnd()
+      }
+
+      {
+        val mv = cw.visitMethod(ACC_PRIVATE + ACC_STATIC + ACC_SYNTHETIC, "$deserializeLambda$", "(Ljava/lang/invoke/SerializedLambda;)Ljava/lang/Object;", null, null)
+        mv.visitCode()
+        // javaBinaryName returns the internal name of a class. Also used in BTypesFromsymbols.classBTypeFromSymbol.
+        mv.visitFieldInsn(GETSTATIC, clazz.javaBinaryName.toString, "$deserializeLambdaCache$", "Ljava/util/Map;")
+        mv.visitVarInsn(ASTORE, 1)
+        mv.visitVarInsn(ALOAD, 1)
+        val l0 = new asm.Label()
+        mv.visitJumpInsn(IFNONNULL, l0)
+        mv.visitTypeInsn(NEW, "java/util/HashMap")
+        mv.visitInsn(DUP)
+        mv.visitMethodInsn(INVOKESPECIAL, "java/util/HashMap", "<init>", "()V", false)
+        mv.visitVarInsn(ASTORE, 1)
+        mv.visitVarInsn(ALOAD, 1)
+        mv.visitFieldInsn(PUTSTATIC, clazz.javaBinaryName.toString, "$deserializeLambdaCache$", "Ljava/util/Map;")
+        mv.visitLabel(l0)
+        mv.visitFieldInsn(GETSTATIC, "scala/compat/java8/runtime/LambdaDeserializer$", "MODULE$", "Lscala/compat/java8/runtime/LambdaDeserializer$;")
+        mv.visitMethodInsn(INVOKESTATIC, "java/lang/invoke/MethodHandles", "lookup", "()Ljava/lang/invoke/MethodHandles$Lookup;", false)
+        mv.visitVarInsn(ALOAD, 1)
+        mv.visitVarInsn(ALOAD, 0)
+        mv.visitMethodInsn(INVOKEVIRTUAL, "scala/compat/java8/runtime/LambdaDeserializer$", "deserializeLambda", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/util/Map;Ljava/lang/invoke/SerializedLambda;)Ljava/lang/Object;", false)
+        mv.visitInsn(ARETURN)
+        mv.visitEnd()
+      }
     }
   } // end of trait BCClassGen
 

@@ -240,6 +240,7 @@ trait StdNames {
 
     final val Any: NameType             = "Any"
     final val AnyVal: NameType          = "AnyVal"
+    final val App: NameType             = "App"
     final val FlagSet: NameType         = "FlagSet"
     final val Mirror: NameType          = "Mirror"
     final val Modifiers: NameType       = "Modifiers"
@@ -870,7 +871,7 @@ trait StdNames {
     val toFloat: NameType  = "toFloat"
     val toDouble: NameType = "toDouble"
 
-    // primitive operation methods for structual types mostly
+    // primitive operation methods for structural types mostly
     // overlap with the above, but not for these two.
     val toCharacter: NameType = "toCharacter"
     val toInteger: NameType   = "toInteger"
@@ -1102,6 +1103,7 @@ trait StdNames {
     final val ELSEkw: TermName         = kw("else")
     final val ENUMkw: TermName         = kw("enum")
     final val EXTENDSkw: TermName      = kw("extends")
+    final val FALSEkw: TermName        = kw("false")
     final val FINALkw: TermName        = kw("final")
     final val FINALLYkw: TermName      = kw("finally")
     final val FLOATkw: TermName        = kw("float")
@@ -1131,6 +1133,7 @@ trait StdNames {
     final val THROWkw: TermName        = kw("throw")
     final val THROWSkw: TermName       = kw("throws")
     final val TRANSIENTkw: TermName    = kw("transient")
+    final val TRUEkw: TermName         = kw("true")
     final val TRYkw: TermName          = kw("try")
     final val VOIDkw: TermName         = kw("void")
     final val VOLATILEkw: TermName     = kw("volatile")
@@ -1166,6 +1169,8 @@ trait StdNames {
     final val GetMethod: TermName        = newTermName("getMethod")
     final val Invoke: TermName           = newTermName("invoke")
     final val InvokeExact: TermName      = newTermName("invokeExact")
+
+    final val AltMetafactory: TermName      = newTermName("altMetafactory")
 
     val Boxed = immutable.Map[TypeName, TypeName](
       tpnme.Boolean -> BoxedBoolean,

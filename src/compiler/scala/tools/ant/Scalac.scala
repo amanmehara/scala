@@ -131,7 +131,7 @@ class Scalac extends ScalaMatchingTask with ScalacShared {
   /** The character encoding of the files to compile. */
   protected var encoding: Option[String] = None
 
-  // the targetted backend
+  // the targeted backend
   protected var backend: Option[String] = None
 
   /** Whether to force compilation of all files or not. */
@@ -577,8 +577,6 @@ class Scalac extends ScalaMatchingTask with ScalacShared {
       settings.classpath.value = asString(getClasspath)
     if (!sourcepath.isEmpty)
       settings.sourcepath.value = asString(getSourcepath)
-    else if (origin.get.size() > 0)
-      settings.sourcepath.value = origin.get.list()(0)
     if (!bootclasspath.isEmpty)
       settings.bootclasspath.value = asString(getBootclasspath)
     if (!extdirs.isEmpty) settings.extdirs.value = asString(getExtdirs)

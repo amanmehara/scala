@@ -343,7 +343,7 @@ private[internal] trait TypeMaps {
     object rawToExistentialInJava extends TypeMap {
       def apply(tp: Type): Type = tp match {
         // any symbol that occurs in a java sig, not just java symbols
-        // see http://lampsvn.epfl.ch/trac/scala/ticket/2454#comment:14
+        // see https://issues.scala-lang.org/browse/SI-2454?focusedCommentId=46618
         case TypeRef(pre, sym, List()) if !sym.typeParams.isEmpty =>
           val eparams = typeParamsToExistentials(sym, sym.typeParams)
           existentialAbstraction(eparams, TypeRef(pre, sym, eparams map (_.tpe)))
@@ -561,7 +561,7 @@ private[internal] trait TypeMaps {
                |  tparams  ${rhsSym.typeParams map own_s mkString ", "}
                |"""
 
-        if (argIndex < 0)
+        if (!rhsArgs.isDefinedAt(argIndex))
           abort(s"Something is wrong: cannot find $lhs in applied type $rhs\n" + explain)
         else {
           val targ   = rhsArgs(argIndex)
@@ -736,7 +736,7 @@ private[internal] trait TypeMaps {
           substFor(sym)
         case ClassInfoType(parents, decls, sym) =>
           val parents1 = parents mapConserve this
-          // We don't touch decls here; they will be touched when an enclosing TreeSubstitutor
+          // We don't touch decls here; they will be touched when an enclosing TreeSubstituter
           // transforms the tree that defines them.
           if (parents1 eq parents) tp
           else ClassInfoType(parents1, decls, sym)
@@ -998,10 +998,20 @@ private[internal] trait TypeMaps {
   class ContainsCollector(sym: Symbol) extends TypeCollector(false) {
     def traverse(tp: Type) {
       if (!result) {
-        tp.normalize match {
-          case TypeRef(_, sym1, _) if (sym == sym1) => result = true
-          case SingleType(_, sym1) if (sym == sym1) => result = true
-          case _ => mapOver(tp)
+        tp match {
+          case _: ExistentialType =>
+            // ExistentialType#normalize internally calls contains, which leads to exponential performance
+            // for types like: `A[_ <: B[_ <: ... ]]`. Example: pos/existential-contains.scala.
+            //
+            // We can just map over the components and wait until we see the underlying type before we call
+            // normalize.
+            mapOver(tp)
+          case _ =>
+            tp.normalize match {
+              case TypeRef(_, sym1, _) if (sym == sym1) => result = true
+              case SingleType(_, sym1) if (sym == sym1) => result = true
+              case _ => mapOver(tp)
+            }
         }
       }
     }

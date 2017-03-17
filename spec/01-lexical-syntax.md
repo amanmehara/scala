@@ -90,11 +90,11 @@ syntactic class `id` of lexical identifiers.
 abstract    case        catch       class       def
 do          else        extends     false       final
 finally     for         forSome     if          implicit
-import      lazy        match       new         null
-object      override    package     private     protected
-return      sealed      super       this        throw
-trait       try         true        type        val
-var         while       with        yield
+import      lazy        macro       match       new
+null        object      override    package     private
+protected   return      sealed      super       this
+throw       trait       try         true        type
+val         var         while       with        yield
 _    :    =    =>    <-    <:    <%     >:    #    @
 ```
 
@@ -443,7 +443,7 @@ multiLineChars  ::=  {[‘"’] [‘"’] charNoDoubleQuote} {‘"’}
 
 A multi-line string literal is a sequence of characters enclosed in
 triple quotes `""" ... """`. The sequence of characters is
-arbitrary, except that it may contain three or more consuctive quote characters
+arbitrary, except that it may contain three or more consecutive quote characters
 only at the very end. Characters
 must not necessarily be printable; newlines or other
 control characters are also permitted.  Unicode escapes work as everywhere else, but none

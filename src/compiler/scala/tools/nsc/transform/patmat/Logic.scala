@@ -38,7 +38,7 @@ trait Logic extends Debugging  {
     padded.transpose.map(alignedColumns).transpose map (_.mkString(sep)) mkString(lineSep)
   }
 
-  // http://www.cis.upenn.edu/~cis510/tcl/chap3.pdf
+  // ftp://ftp.cis.upenn.edu/pub/cis511/public_html/Spring04/chap3.pdf
   // http://users.encs.concordia.ca/~ta_ahmed/ms_thesis.pdf
   // propositional logic with constants and equality
   trait PropositionalLogic {
@@ -510,7 +510,7 @@ trait ScalaLogic extends Interface with Logic with TreeAndTypeAnalysis {
       def propForEqualsTo(c: Const): Prop = {observed(); symForEqualsTo.getOrElse(c, False)}
 
       // [implementation NOTE: don't access until all potential equalities have been registered using registerEquality]p
-      /** the information needed to construct the boolean proposition that encods the equality proposition (V = C)
+      /** the information needed to construct the boolean proposition that encodes the equality proposition (V = C)
        *
        * that models a type test pattern `_: C` or constant pattern `C`, where the type test gives rise to a TypeConst C,
        * and the constant pattern yields a ValueConst C
@@ -542,7 +542,7 @@ trait ScalaLogic extends Interface with Logic with TreeAndTypeAnalysis {
          *
          * (0) A or B must be in the domain to draw any conclusions.
          *
-         *     For example, knowing the the scrutinee is *not* true does not
+         *     For example, knowing the scrutinee is *not* true does not
          *     statically exclude it from being `X`, because that is an opaque
          *     Boolean.
          *
@@ -691,7 +691,7 @@ trait ScalaLogic extends Interface with Logic with TreeAndTypeAnalysis {
           // if X is mutable.
           freshExistentialSubtype(t.tpe)
         }
-        else trees find (a => a.correspondsStructure(t)(sameValue)) match {
+        else trees find (a => equivalentTree(a, t)) match {
           case Some(orig) =>
             debug.patmat("unique tp for tree: " + ((orig, orig.tpe)))
             orig.tpe

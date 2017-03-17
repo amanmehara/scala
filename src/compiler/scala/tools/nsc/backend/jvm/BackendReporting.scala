@@ -1,7 +1,7 @@
 package scala.tools.nsc
 package backend.jvm
 
-import scala.tools.asm.tree.{AbstractInsnNode, MethodNode}
+import scala.tools.asm.tree.{InvokeDynamicInsnNode, AbstractInsnNode, MethodNode}
 import scala.tools.nsc.backend.jvm.BTypes.InternalName
 import scala.reflect.internal.util.Position
 import scala.tools.nsc.settings.ScalaSettings
@@ -245,6 +245,33 @@ object BackendReporting {
                               callsiteClass: InternalName, callsiteName: String, callsiteDesc: String) extends CannotInlineWarning
   case class ResultingMethodTooLarge(calleeDeclarationClass: InternalName, name: String, descriptor: String,
                                      callsiteClass: InternalName, callsiteName: String, callsiteDesc: String) extends CannotInlineWarning
+
+  case object UnknownInvokeDynamicInstruction extends OptimizerWarning {
+    override def toString = "The callee contains an InvokeDynamic instruction with an unknown bootstrap method (not a LambdaMetaFactory)."
+    def emitWarning(settings: ScalaSettings): Boolean = settings.YoptWarningEmitAtInlineFailed
+  }
+
+  /**
+   * Used in `rewriteClosureApplyInvocations` when a closure apply callsite cannot be rewritten
+   * to the closure body method.
+   */
+  sealed trait RewriteClosureApplyToClosureBodyFailed extends OptimizerWarning {
+    def pos: Position
+
+    override def emitWarning(settings: ScalaSettings): Boolean = this match {
+      case RewriteClosureAccessCheckFailed(_, cause) => cause.emitWarning(settings)
+      case RewriteClosureIllegalAccess(_, _)         => settings.YoptWarningEmitAtInlineFailed
+    }
+
+    override def toString: String = this match {
+      case RewriteClosureAccessCheckFailed(_, cause) =>
+        s"Failed to rewrite the closure invocation to its implementation method:\n" + cause
+      case RewriteClosureIllegalAccess(_, callsiteClass) =>
+        s"The closure body invocation cannot be rewritten because the target method is not accessible in class $callsiteClass."
+    }
+  }
+  case class RewriteClosureAccessCheckFailed(pos: Position, cause: OptimizerWarning) extends RewriteClosureApplyToClosureBodyFailed
+  case class RewriteClosureIllegalAccess(pos: Position, callsiteClass: InternalName) extends RewriteClosureApplyToClosureBodyFailed
 
   /**
    * Used in the InlineInfo of a ClassBType, when some issue occurred obtaining the inline information.

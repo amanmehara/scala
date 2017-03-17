@@ -934,7 +934,7 @@ trait Infer extends Checkable {
       def infer_s = map3(tparams, tvars, targs)((tparam, tvar, targ) => s"$tparam=$tvar/$targ") mkString ","
       printTyping(tree, s"infer expr instance from pt=$pt, $infer_s")
 
-      // SI-7899 infering by-name types is unsound. The correct behaviour is conditional because the hole is
+      // SI-7899 inferring by-name types is unsound. The correct behaviour is conditional because the hole is
       //         exploited in Scalaz (Free.scala), as seen in: run/t7899-regression.
       def dropByNameIfStrict(tp: Type): Type = if (settings.inferByName) tp else dropByName(tp)
       def targsStrict = if (targs eq null) null else targs mapConserve dropByNameIfStrict
@@ -1117,7 +1117,7 @@ trait Infer extends Checkable {
 
     // this is quite nasty: it destructively changes the info of the syms of e.g., method type params
     // (see #3692, where the type param T's bounds were set to > : T <: T, so that parts looped)
-    // the changes are rolled back by restoreTypeBounds, but might be unintentially observed in the mean time
+    // the changes are rolled back by restoreTypeBounds, but might be unintentionally observed in the mean time
     def instantiateTypeVar(tvar: TypeVar) {
       val tparam                    = tvar.origin.typeSymbol
       val TypeBounds(lo0, hi0)      = tparam.info.bounds
@@ -1254,7 +1254,6 @@ trait Infer extends Checkable {
       def isFreeTypeParamOfTerm(sym: Symbol) = (
         sym.isAbstractType
           && sym.owner.isTerm
-          && !sym.info.bounds.exists(_.typeParams.nonEmpty)
         )
 
       // Intentionally *not* using `Type#typeSymbol` here, which would normalize `tp`
@@ -1375,7 +1374,7 @@ trait Infer extends Checkable {
      *  Otherwise, if there is no best alternative, error.
      *
      *  @param argtpes0 contains the argument types. If an argument is named, as
-     *    "a = 3", the corresponding type is `NamedType("a", Int)'. If the name
+     *    "a = 3", the corresponding type is `NamedType("a", Int)`. If the name
      *    of some NamedType does not exist in an alternative's parameter names,
      *    the type is replaces by `Unit`, i.e. the argument is treated as an
      *    assignment expression.

@@ -110,10 +110,10 @@ trait Implicits {
    * Ignore their constr field! The list of type constraints returned along with each tree specifies the constraints that
    * must be met by the corresponding type parameter in `tpars` (for the returned implicit view to be valid).
    *
-   * @arg tp      from-type for the implicit conversion
-   * @arg context search implicits here
-   * @arg tpars   symbols that should be considered free type variables
-   *              (implicit search should not try to solve them, just track their constraints)
+   * @param tp      from-type for the implicit conversion
+   * @param context search implicits here
+   * @param tpars   symbols that should be considered free type variables
+   *                (implicit search should not try to solve them, just track their constraints)
    */
   def allViewsFrom(tp: Type, context: Context, tpars: List[Symbol]): List[(SearchResult, List[TypeConstraint])] = {
     // my untouchable typevars are better than yours (they can't be constrained by them)
@@ -324,8 +324,10 @@ trait Implicits {
    */
   class ImplicitSearch(tree: Tree, pt: Type, isView: Boolean, context0: Context, pos0: Position = NoPosition) extends Typer(context0) with ImplicitsContextErrors {
     val searchId = implicitSearchId()
-    private def typingLog(what: String, msg: => String) =
-      typingStack.printTyping(tree, f"[search #$searchId] $what $msg")
+    private def typingLog(what: String, msg: => String) = {
+      if (printingOk(tree))
+        typingStack.printTyping(f"[search #$searchId] $what $msg")
+    }
 
     import infer._
     if (Statistics.canEnable) Statistics.incCounter(implicitSearchCount)
@@ -586,10 +588,10 @@ trait Implicits {
       if (Statistics.canEnable) Statistics.incCounter(matchingImplicits)
 
       // workaround for deficient context provided by ModelFactoryImplicitSupport#makeImplicitConstraints
-      val isScalaDoc = context.tree == EmptyTree
+      val isScaladoc = context.tree == EmptyTree
 
       val itree0 = atPos(pos.focus) {
-        if (isLocalToCallsite && !isScalaDoc) {
+        if (isLocalToCallsite && !isScaladoc) {
           // SI-4270 SI-5376 Always use an unattributed Ident for implicits in the local scope,
           // rather than an attributed Select, to detect shadowing.
           Ident(info.name)
@@ -626,7 +628,7 @@ trait Implicits {
               // for instance, if we have `class C[T]` and `implicit def conv[T: Numeric](c: C[T]) = ???`
               // then Scaladoc will give us something of type `C[T]`, and it would like to know
               // that `conv` is potentially available under such and such conditions
-              case tree if isImplicitMethodType(tree.tpe) && !isScalaDoc =>
+              case tree if isImplicitMethodType(tree.tpe) && !isScaladoc =>
                 applyImplicitArgs(tree)
               case tree => tree
             }
@@ -846,7 +848,7 @@ trait Implicits {
           errors.collectFirst { case err: DivergentImplicitTypeError => err } foreach saveDivergent
 
           if (search.isDivergent && divergentError.isEmpty) {
-            // Divergence triggered by `i` at this level of the implicit serach. We haven't
+            // Divergence triggered by `i` at this level of the implicit search. We haven't
             // seen divergence so far, we won't issue this error just yet, and instead temporarily
             // treat `i` as a failed candidate.
             saveDivergent(DivergentImplicitTypeError(tree, pt, i.sym))
@@ -918,7 +920,7 @@ trait Implicits {
 
       /** Returns all eligible ImplicitInfos and their SearchResults in a map.
        */
-      def findAll() = linkedMapFrom(eligible)(typedImplicit(_, ptChecked = false, isLocalToCallsite))
+      def findAll() = linkedMapFrom(eligible)(x => try typedImplicit(x, ptChecked = false, isLocalToCallsite) finally context.reporter.clearAll())
 
       /** Returns the SearchResult of the best match.
        */
@@ -985,7 +987,7 @@ trait Implicits {
       if (implicitInfoss.forall(_.isEmpty)) SearchFailure
       else new ImplicitComputation(implicitInfoss, isLocalToCallsite) findBest()
 
-    /** Produce an implicict info map, i.e. a map from the class symbols C of all parts of this type to
+    /** Produce an implicit info map, i.e. a map from the class symbols C of all parts of this type to
      *  the implicit infos in the companion objects of these class symbols C.
      * The parts of a type is the smallest set of types that contains
      *    - the type itself
@@ -1361,7 +1363,7 @@ trait Implicits {
         val succstart = if (stats) Statistics.startTimer(oftypeSucceedNanos) else null
 
         // SI-6667, never search companions after an ambiguous error in in-scope implicits
-        val wasAmbigious = result.isAmbiguousFailure
+        val wasAmbiguous = result.isAmbiguousFailure
 
         // TODO: encapsulate
         val previousErrs = context.reporter.errors
@@ -1371,7 +1373,7 @@ trait Implicits {
 
         // `materializeImplicit` does some preprocessing for `pt`
         // is it only meant for manifests/tags or we need to do the same for `implicitsOfExpectedType`?
-        if (result.isFailure && !wasAmbigious)
+        if (result.isFailure && !wasAmbiguous)
           result = searchImplicit(implicitsOfExpectedType, isLocalToCallsite = false)
 
         if (result.isFailure)

@@ -103,7 +103,7 @@ trait Definitions extends api.StandardDefinitions {
     def isNumericValueClass(sym: Symbol) = ScalaNumericValueClasses contains sym
 
     def isGetClass(sym: Symbol) = (
-         sym.name == nme.getClass_ // this condition is for performance only, this is called from `Typer#stabliize`.
+         sym.name == nme.getClass_ // this condition is for performance only, this is called from `Typer#stabilize`.
       && getClassMethods(sym)
     )
 
@@ -369,6 +369,8 @@ trait Definitions extends api.StandardDefinitions {
     lazy val JavaEnumClass         = requiredClass[java.lang.Enum[_]]
     lazy val RemoteInterfaceClass  = requiredClass[java.rmi.Remote]
     lazy val RemoteExceptionClass  = requiredClass[java.rmi.RemoteException]
+    lazy val JavaUtilMap           = requiredClass[java.util.Map[_, _]]
+    lazy val JavaUtilHashMap       = requiredClass[java.util.HashMap[_, _]]
 
     lazy val ByNameParamClass       = specialPolyClass(tpnme.BYNAME_PARAM_CLASS_NAME, COVARIANT)(_ => AnyTpe)
     lazy val JavaRepeatedParamClass = specialPolyClass(tpnme.JAVA_REPEATED_PARAM_CLASS_NAME, COVARIANT)(tparam => arrayType(tparam.tpe))
@@ -514,6 +516,7 @@ trait Definitions extends api.StandardDefinitions {
     lazy val ScalaSignatureAnnotation = requiredClass[scala.reflect.ScalaSignature]
     lazy val ScalaLongSignatureAnnotation = requiredClass[scala.reflect.ScalaLongSignature]
 
+    lazy val LambdaMetaFactory = getClassIfDefined("java.lang.invoke.LambdaMetafactory")
     lazy val MethodHandle = getClassIfDefined("java.lang.invoke.MethodHandle")
 
     // Option classes
@@ -643,8 +646,8 @@ trait Definitions extends api.StandardDefinitions {
       isBundle && isBlackbox
     }
 
-    def isListType(tp: Type)     = tp <:< classExistentialType(ListClass)
-    def isIterableType(tp: Type) = tp <:< classExistentialType(IterableClass)
+    def isListType(tp: Type)     = tp.typeSymbol.isNonBottomSubClass(ListClass)
+    def isIterableType(tp: Type) = tp.typeSymbol.isNonBottomSubClass(IterableClass)
 
     // These "direct" calls perform no dealiasing. They are most needed when
     // printing types when one wants to preserve the true nature of the type.
@@ -812,7 +815,7 @@ trait Definitions extends api.StandardDefinitions {
         // must filter out "universal" members (getClass is deferred for some reason)
         val deferredMembers = (
           tp membersBasedOnFlags (excludedFlags = BridgeAndPrivateFlags, requiredFlags = METHOD)
-          filter (mem => mem.isDeferredNotDefault && !isUniversalMember(mem)) // TODO: test
+          filter (mem => mem.isDeferredNotJavaDefault && !isUniversalMember(mem)) // TODO: test
         )
 
         // if there is only one, it's monomorphic and has a single argument list
@@ -922,14 +925,10 @@ trait Definitions extends api.StandardDefinitions {
      *
      *    C[E1, ..., En] forSome { E1 >: LB1 <: UB1 ... en >: LBn <: UBn }.
      */
-    // TODO Review the way this is used. I see two potential problems:
-    //  1. `existentialAbstraction` here doesn't create fresh existential type symbols, it just
-    //     uses the class type parameter symbols directly as the list of quantified symbols.
-    //     See SI-8244 for the trouble that this can cause.
-    //     Compare with callers of `typeParamsToExistentials` (used in Java raw type handling)
-    //  2. Why don't we require a prefix? Could its omission lead to wrong results in CheckabilityChecker?
-    def classExistentialType(clazz: Symbol): Type =
-      existentialAbstraction(clazz.typeParams, clazz.tpe_*)
+    def classExistentialType(prefix: Type, clazz: Symbol): Type = {
+      val eparams = typeParamsToExistentials(clazz, clazz.unsafeTypeParams)
+      newExistentialType(eparams, typeRef(prefix, clazz, eparams.map(_.tpeHK)))
+    }
 
     // members of class scala.Any
 

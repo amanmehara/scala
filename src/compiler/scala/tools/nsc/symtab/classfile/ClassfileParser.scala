@@ -84,6 +84,9 @@ abstract class ClassfileParser {
   protected final def u2(): Int = in.nextChar.toInt
   protected final def u4(): Int = in.nextInt
 
+  protected final def s1(): Int = in.nextByte.toInt // sign-extend the byte to int
+  protected final def s2(): Int = (in.nextByte.toInt << 8) | u1 // sign-extend and shift the first byte, or with the unsigned second byte
+
   private def readInnerClassFlags() = readClassFlags()
   private def readClassFlags()      = JavaAccFlags classFlags u2
   private def readMethodFlags()     = JavaAccFlags methodFlags u2
@@ -284,7 +287,7 @@ abstract class ClassfileParser {
 
     def getType(index: Int): Type              = getType(null, index)
     def getType(sym: Symbol, index: Int): Type = sigToType(sym, getExternalName(index))
-    def getSuperClass(index: Int): Symbol      = if (index == 0) AnyClass else getClassSymbol(index)
+    def getSuperClass(index: Int): Symbol      = if (index == 0) AnyClass else getClassSymbol(index) // the only classfile that is allowed to have `0` in the super_class is java/lang/Object (see jvm spec)
 
     private def createConstant(index: Int): Constant = {
       val start = starts(index)
@@ -539,6 +542,8 @@ abstract class ClassfileParser {
             devWarning(s"no linked class for java enum $sym in ${sym.owner}. A referencing class file might be missing an InnerClasses entry.")
           case linked =>
             if (!linked.isSealed)
+              // Marking the enum class SEALED | ABSTRACT enables exhaustiveness checking.
+              // This is a bit of a hack and requires excluding the ABSTRACT flag in the backend, see method javaClassfileFlags.
               linked setFlag (SEALED | ABSTRACT)
             linked addChild sym
         }
@@ -671,10 +676,9 @@ abstract class ClassfileParser {
               // so have to check unsafeTypeParams.isEmpty before worrying about raw type case below,
               // or we'll create a boatload of needless existentials.
               else if (classSym.isMonomorphicType || classSym.unsafeTypeParams.isEmpty) tp
-              else debuglogResult(s"raw type from $classSym"){
+              else debuglogResult(s"raw type from $classSym") {
                 // raw type - existentially quantify all type parameters
-                val eparams = typeParamsToExistentials(classSym, classSym.unsafeTypeParams)
-                newExistentialType(eparams, typeRef(pre, classSym, eparams.map(_.tpeHK)))
+                classExistentialType(pre, classSym)
               }
             case tp =>
               assert(sig.charAt(index) != '<', s"sig=$sig, index=$index, tp=$tp")
@@ -860,7 +864,7 @@ abstract class ClassfileParser {
           srcfile0 = settings.outputDirs.srcFilesFor(in.file, srcpath).find(_.exists)
         case tpnme.CodeATTR =>
           if (sym.owner.isInterface) {
-            sym setFlag DEFAULTMETHOD
+            sym setFlag JAVA_DEFAULTMETHOD
             log(s"$sym in ${sym.owner} is a java8+ default method.")
           }
           in.skip(attrLen)

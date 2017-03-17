@@ -336,7 +336,18 @@ abstract class Erasure extends AddInterfaces
 
         case MethodType(params, restpe) =>
           val buf = new StringBuffer("(")
-          params foreach (p => buf append jsig(p.tpe))
+          params foreach (p => {
+            val tp = p.attachments.get[TypeParamVarargsAttachment] match {
+              case Some(att) =>
+                // For @varargs forwarders, a T* parameter has type Array[Object] in the forwarder
+                // instead of Array[T], as the latter would erase to Object (instead of Array[Object]).
+                // To make the generic signature correct ("[T", not "[Object"), an attachment on the
+                // parameter symbol stores the type T that was replaced by Object.
+                buf.append("["); att.typeParamRef
+              case _         => p.tpe
+            }
+            buf append jsig(tp)
+          })
           buf append ")"
           buf append (if (restpe.typeSymbol == UnitClass || sym0.isConstructor) VOID_TAG.toString else jsig(restpe))
           buf.toString
@@ -400,7 +411,15 @@ abstract class Erasure extends AddInterfaces
   override def newTyper(context: Context) = new Eraser(context)
 
   class ComputeBridges(unit: CompilationUnit, root: Symbol) {
-    assert(phase == currentRun.erasurePhase, phase)
+
+    class BridgesCursor(root: Symbol) extends overridingPairs.Cursor(root) {
+      override def parents              = List(root.info.firstParent)
+      // Varargs bridges may need generic bridges due to the non-repeated part of the signature of the involved methods.
+      // The vararg bridge is generated during refchecks (probably to simplify override checking),
+      // but then the resulting varargs "bridge" method may itself need an actual erasure bridge.
+      // TODO: like javac, generate just one bridge method that wraps Seq <-> varargs and does erasure-induced casts
+      override def exclude(sym: Symbol) = !sym.isMethod || super.exclude(sym)
+    }
 
     var toBeRemoved  = immutable.Set[Symbol]()
     val site         = root.thisType
@@ -408,12 +427,7 @@ abstract class Erasure extends AddInterfaces
     val bridgeTarget = mutable.HashMap[Symbol, Symbol]()
     var bridges      = List[Tree]()
 
-    val opc = enteringExplicitOuter {
-      new overridingPairs.Cursor(root) {
-        override def parents              = List(root.info.firstParent)
-        override def exclude(sym: Symbol) = !sym.isMethod || super.exclude(sym)
-      }
-    }
+    val opc = enteringExplicitOuter { new BridgesCursor(root) }
 
     def compute(): (List[Tree], immutable.Set[Symbol]) = {
       while (opc.hasNext) {
@@ -800,6 +814,16 @@ abstract class Erasure extends AddInterfaces
       }
     }
 
+    private class DoubleDefsCursor(root: Symbol) extends Cursor(root) {
+      // specialized members have no type history before 'specialize', causing double def errors for curried defs
+      override def exclude(sym: Symbol): Boolean = (
+           sym.isType
+        || super.exclude(sym)
+        || !sym.hasTypeAt(currentRun.refchecksPhase.id)
+      )
+      override def matches(lo: Symbol, high: Symbol) = !high.isPrivate
+    }
+
     /** Emit an error if there is a double definition. This can happen if:
      *
      *  - A template defines two members with the same name and erased type.
@@ -810,22 +834,12 @@ abstract class Erasure extends AddInterfaces
      */
     private def checkNoDoubleDefs(root: Symbol) {
       checkNoDeclaredDoubleDefs(root)
-      object opc extends Cursor(root) {
-        // specialized members have no type history before 'specialize', causing double def errors for curried defs
-        override def exclude(sym: Symbol): Boolean = (
-             sym.isType
-          || sym.isPrivate
-          || super.exclude(sym)
-          || !sym.hasTypeAt(currentRun.refchecksPhase.id)
-        )
-        override def matches(lo: Symbol, high: Symbol) = true
-      }
       def isErasureDoubleDef(pair: SymbolPair) = {
         import pair._
         log(s"Considering for erasure clash:\n$pair")
         !exitingRefchecks(lowType matches highType) && sameTypeAfterErasure(low, high)
       }
-      opc.iterator filter isErasureDoubleDef foreach doubleDefError
+      (new DoubleDefsCursor(root)).iterator filter isErasureDoubleDef foreach doubleDefError
     }
 
     /**  Add bridge definitions to a template. This means:

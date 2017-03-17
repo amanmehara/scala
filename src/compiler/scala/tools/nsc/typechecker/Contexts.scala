@@ -168,13 +168,13 @@ trait Contexts { self: Analyzer =>
    *     fine grained control is needed based on the kind of error; ambiguity errors are often
    *     suppressed during exploratory typing, such as determining whether `a == b` in an argument
    *     position is an assignment or a named argument, when `Inferencer#isApplicableSafe` type checks
-   *     applications with and without an expected type, or whtn `Typer#tryTypedApply` tries to fit arguments to
+   *     applications with and without an expected type, or when `Typer#tryTypedApply` tries to fit arguments to
    *     a function type with/without implicit views.
    *
-   *     When the error policies entails error/warning buffering, the mutable [[ReportBuffer]] records
+   *     When the error policies entail error/warning buffering, the mutable [[ReportBuffer]] records
    *     everything that is issued. It is important to note, that child Contexts created with `make`
    *     "inherit" the very same `ReportBuffer` instance, whereas children spawned through `makeSilent`
-   *     receive an separate, fresh buffer.
+   *     receive a separate, fresh buffer.
    *
    * @param tree  Tree associated with this context
    * @param owner The current owner
@@ -574,19 +574,23 @@ trait Contexts { self: Analyzer =>
     /** Issue/buffer/throw the given implicit ambiguity error according to the current mode for error reporting. */
     private[typechecker] def issueAmbiguousError(err: AbsAmbiguousTypeError) = reporter.issueAmbiguousError(err)(this)
     /** Issue/throw the given error message according to the current mode for error reporting. */
-    def error(pos: Position, msg: String)                                    = reporter.error(pos, msg)
+    def error(pos: Position, msg: String)                                    = reporter.error(fixPosition(pos), msg)
     /** Issue/throw the given error message according to the current mode for error reporting. */
-    def warning(pos: Position, msg: String)                                  = reporter.warning(pos, msg)
-    def echo(pos: Position, msg: String)                                     = reporter.echo(pos, msg)
+    def warning(pos: Position, msg: String)                                  = reporter.warning(fixPosition(pos), msg)
+    def echo(pos: Position, msg: String)                                     = reporter.echo(fixPosition(pos), msg)
+    def fixPosition(pos: Position): Position = pos match {
+      case NoPosition => nextEnclosing(_.tree.pos != NoPosition).tree.pos
+      case _ => pos
+    }
 
 
     def deprecationWarning(pos: Position, sym: Symbol, msg: String): Unit =
-      currentRun.reporting.deprecationWarning(pos, sym, msg)
+      currentRun.reporting.deprecationWarning(fixPosition(pos), sym, msg)
     def deprecationWarning(pos: Position, sym: Symbol): Unit =
-      currentRun.reporting.deprecationWarning(pos, sym) // TODO: allow this to escalate to an error, and implicit search will ignore deprecated implicits
+      currentRun.reporting.deprecationWarning(fixPosition(pos), sym) // TODO: allow this to escalate to an error, and implicit search will ignore deprecated implicits
 
     def featureWarning(pos: Position, featureName: String, featureDesc: String, featureTrait: Symbol, construct: => String = "", required: Boolean): Unit =
-      currentRun.reporting.featureWarning(pos, featureName, featureDesc, featureTrait, construct, required)
+      currentRun.reporting.featureWarning(fixPosition(pos), featureName, featureDesc, featureTrait, construct, required)
 
 
     // nextOuter determines which context is searched next for implicits
@@ -802,6 +806,12 @@ trait Contexts { self: Analyzer =>
         (e ne null) && (e.owner == scope) && (!settings.isScala212 || e.sym.exists)
       })
 
+    private def withQualifyingImplicitAlternatives(imp: ImportInfo, name: Name, pre: Type)(f: Symbol => Unit) =
+      for {
+        sym <- importedAccessibleSymbol(imp, name, requireExplicit = false, record = false).alternatives
+        if isQualifyingImplicit(name, sym, pre, imported = true)
+      } f(sym)
+
     private def collectImplicits(syms: Scope, pre: Type, imported: Boolean = false): List[ImplicitInfo] =
       for (sym <- syms.toList if isQualifyingImplicit(sym.name, sym, pre, imported)) yield
         new ImplicitInfo(sym.name, pre, sym)
@@ -811,7 +821,7 @@ trait Contexts { self: Analyzer =>
 
       val pre =
         if (qual.tpe.typeSymbol.isPackageClass)
-          // SI-6225 important if the imported symbol is inherited by the the package object.
+          // SI-6225 important if the imported symbol is inherited by the package object.
           singleType(qual.tpe, qual.tpe member nme.PACKAGE)
         else
           qual.tpe
@@ -819,13 +829,18 @@ trait Contexts { self: Analyzer =>
         case List() =>
           List()
         case List(ImportSelector(nme.WILDCARD, _, _, _)) =>
-          collectImplicits(pre.implicitMembers, pre, imported = true)
+          // Using pre.implicitMembers seems to exposes a problem with out-dated symbols in the IDE,
+          // see the example in https://www.assembla.com/spaces/scala-ide/tickets/1002552#/activity/ticket
+          // I haven't been able to boil that down the an automated test yet.
+          // Looking up implicit members in the package, rather than package object, here is at least
+          // consistent with what is done just below for named imports.
+          collectImplicits(qual.tpe.implicitMembers, pre, imported = true)
         case ImportSelector(from, _, to, _) :: sels1 =>
           var impls = collect(sels1) filter (info => info.name != from)
           if (to != nme.WILDCARD) {
-            for (sym <- importedAccessibleSymbol(imp, to).alternatives)
-              if (isQualifyingImplicit(to, sym, pre, imported = true))
-                impls = new ImplicitInfo(to, pre, sym) :: impls
+            withQualifyingImplicitAlternatives(imp, to, pre) { sym =>
+              impls = new ImplicitInfo(to, pre, sym) :: impls
+            }
           }
           impls
       }
@@ -949,11 +964,8 @@ trait Contexts { self: Analyzer =>
     /** The symbol with name `name` imported via the import in `imp`,
      *  if any such symbol is accessible from this context.
      */
-    def importedAccessibleSymbol(imp: ImportInfo, name: Name): Symbol =
-      importedAccessibleSymbol(imp, name, requireExplicit = false)
-
-    private def importedAccessibleSymbol(imp: ImportInfo, name: Name, requireExplicit: Boolean): Symbol =
-      imp.importedSymbol(name, requireExplicit) filter (s => isAccessible(s, imp.qual.tpe, superAccess = false))
+    private def importedAccessibleSymbol(imp: ImportInfo, name: Name, requireExplicit: Boolean, record: Boolean): Symbol =
+      imp.importedSymbol(name, requireExplicit, record) filter (s => isAccessible(s, imp.qual.tpe, superAccess = false))
 
     /** Is `sym` defined in package object of package `pkg`?
      *  Since sym may be defined in some parent of the package object,
@@ -1099,7 +1111,7 @@ trait Contexts { self: Analyzer =>
       def imp2Explicit   = imp2 isExplicitImport name
 
       def lookupImport(imp: ImportInfo, requireExplicit: Boolean) =
-        importedAccessibleSymbol(imp, name, requireExplicit) filter qualifies
+        importedAccessibleSymbol(imp, name, requireExplicit, record = true) filter qualifies
 
       // Java: A single-type-import declaration d in a compilation unit c of package p
       // that imports a type named n shadows, throughout c, the declarations of:
@@ -1239,7 +1251,7 @@ trait Contexts { self: Analyzer =>
     type Error = AbsTypeError
     type Warning = (Position, String)
 
-    def issue(err: AbsTypeError)(implicit context: Context): Unit = handleError(err.errPos, addDiagString(err.errMsg))
+    def issue(err: AbsTypeError)(implicit context: Context): Unit = handleError(context.fixPosition(err.errPos), addDiagString(err.errMsg))
 
     protected def handleError(pos: Position, msg: String): Unit
     protected def handleSuppressedAmbiguous(err: AbsAmbiguousTypeError): Unit = ()
@@ -1256,7 +1268,7 @@ trait Contexts { self: Analyzer =>
      *  - else, let this context reporter decide
      */
     final def issueAmbiguousError(err: AbsAmbiguousTypeError)(implicit context: Context): Unit =
-      if (context.ambiguousErrors) reporter.error(err.errPos, addDiagString(err.errMsg)) // force reporting... see TODO above
+      if (context.ambiguousErrors) reporter.error(context.fixPosition(err.errPos), addDiagString(err.errMsg)) // force reporting... see TODO above
       else handleSuppressedAmbiguous(err)
 
     @inline final def withFreshErrorBuffer[T](expr: => T): T = {
@@ -1413,7 +1425,7 @@ trait Contexts { self: Analyzer =>
 
     /** The symbol with name `name` imported from import clause `tree`.
      */
-    def importedSymbol(name: Name): Symbol = importedSymbol(name, requireExplicit = false)
+    def importedSymbol(name: Name): Symbol = importedSymbol(name, requireExplicit = false, record = true)
 
     private def recordUsage(sel: ImportSelector, result: Symbol) {
       def posstr = pos.source.file.name + ":" + posOf(sel).line
@@ -1423,7 +1435,7 @@ trait Contexts { self: Analyzer =>
     }
 
     /** If requireExplicit is true, wildcard imports are not considered. */
-    def importedSymbol(name: Name, requireExplicit: Boolean): Symbol = {
+    def importedSymbol(name: Name, requireExplicit: Boolean, record: Boolean): Symbol = {
       var result: Symbol = NoSymbol
       var renamed = false
       var selectors = tree.selectors
@@ -1440,7 +1452,7 @@ trait Contexts { self: Analyzer =>
         if (result == NoSymbol)
           selectors = selectors.tail
       }
-      if (settings.warnUnusedImport && selectors.nonEmpty && result != NoSymbol && pos != NoPosition)
+      if (record && settings.warnUnusedImport && selectors.nonEmpty && result != NoSymbol && pos != NoPosition)
         recordUsage(current, result)
 
       // Harden against the fallout from bugs like SI-6745
@@ -1537,7 +1549,7 @@ object ContextMode {
   final val TypeConstructorAllowed: ContextMode   = 1 << 16
 
   /** TODO: The "sticky modes" are EXPRmode, PATTERNmode, TYPEmode.
-   *  To mimick the sticky mode behavior, when captain stickyfingers
+   *  To mimic the sticky mode behavior, when captain stickyfingers
    *  comes around we need to propagate those modes but forget the other
    *  context modes which were once mode bits; those being so far the
    *  ones listed here.

@@ -86,7 +86,7 @@ object Test extends App {
     def f(a: Object) = "first"
     val f: String => String = a => "second"
   }
-  println(t5.f(new Sub1())) // firsst
+  println(t5.f(new Sub1())) // first
   println(t5.f("dfklj"))    // second
 
   object t6 {
@@ -192,7 +192,7 @@ object Test extends App {
   println(argName) // should be 4
   test5 { argName = 5 }
   println(argName) // should be 5
-  val a: Unit = test1(a = 10, b = "2") // local values a and b exist, but not ambiuous since they're val's
+  val a: Unit = test1(a = 10, b = "2") // local values a and b exist, but it's not ambiguous since they're vals
 
 
   // dependent types and copy method
@@ -239,7 +239,7 @@ object Test extends App {
   // result type of default getters: parameter type, except if this one mentions any type
   // parameter, in which case the result type is inferred. examples:
 
-  // result type of default getter is "String => String". if it were infered, the compiler
+  // result type of default getter is "String => String". if it were inferred, the compiler
   // would put "Nothing => Nothing", which is useless
   def transform(s: String, f: String => String = identity _) = f(s)
   println(transform("my text"))

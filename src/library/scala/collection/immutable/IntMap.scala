@@ -146,7 +146,7 @@ private[immutable] class IntMapKeyIterator[V](it: IntMap[V]) extends IntMapItera
 import IntMap._
 
 /** Specialised immutable map structure for integer keys, based on
- *  <a href="http://citeseer.ist.psu.edu/okasaki98fast.html">Fast Mergeable Integer Maps</a>
+ *  [[http://ittc.ku.edu/~andygill/papers/IntMap98.pdf Fast Mergeable Integer Maps]]
  *  by Okasaki and Gill. Essentially a trie based on binary digits of the integers.
  *
  *  '''Note:''' This class is as of 2.8 largely superseded by HashMap.
@@ -184,7 +184,7 @@ sealed abstract class IntMap[+T] extends AbstractMap[Int, T]
   /**
    * Loops over the key, value pairs of the map in unsigned order of the keys.
    */
-  override final def foreach[U](f: ((Int, T)) =>  U): Unit = this match {
+  override final def foreach[U](f: ((Int, T)) => U): Unit = this match {
     case IntMap.Bin(_, _, left, right) => { left.foreach(f); right.foreach(f) }
     case IntMap.Tip(key, value) => f((key, value))
     case IntMap.Nil =>

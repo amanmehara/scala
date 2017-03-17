@@ -132,25 +132,31 @@ override def companion: GenericCompanion[Vector] = Vector
       throw new IndexOutOfBoundsException(index.toString)
   }
 
-
+  // If we have a default builder, there are faster ways to perform some operations
+  @inline private[this] def isDefaultCBF[A, B, That](bf: CanBuildFrom[Vector[A], B, That]): Boolean =
+    (bf eq IndexedSeq.ReusableCBF) || (bf eq collection.immutable.Seq.ReusableCBF) || (bf eq collection.Seq.ReusableCBF)
+    
   // SeqLike api
 
   override def updated[B >: A, That](index: Int, elem: B)(implicit bf: CanBuildFrom[Vector[A], B, That]): That =
-    if (bf eq IndexedSeq.ReusableCBF) updateAt(index, elem).asInstanceOf[That] // just ignore bf
+    if (isDefaultCBF[A, B, That](bf))
+      updateAt(index, elem).asInstanceOf[That] // ignore bf--it will just give a Vector, and slowly
     else super.updated(index, elem)(bf)
 
   override def +:[B >: A, That](elem: B)(implicit bf: CanBuildFrom[Vector[A], B, That]): That =
-    if (bf eq IndexedSeq.ReusableCBF) appendFront(elem).asInstanceOf[That] // just ignore bf
+    if (isDefaultCBF[A, B, That](bf))
+      appendFront(elem).asInstanceOf[That] // ignore bf--it will just give a Vector, and slowly
     else super.+:(elem)(bf)
 
   override def :+[B >: A, That](elem: B)(implicit bf: CanBuildFrom[Vector[A], B, That]): That =
-    if (bf eq IndexedSeq.ReusableCBF) appendBack(elem).asInstanceOf[That] // just ignore bf
+    if (isDefaultCBF(bf))
+      appendBack(elem).asInstanceOf[That] // ignore bf--it will just give a Vector, and slowly
     else super.:+(elem)(bf)
 
   override def take(n: Int): Vector[A] = {
     if (n <= 0)
       Vector.empty
-    else if (startIndex + n < endIndex)
+    else if (startIndex < endIndex - n)
       dropBack0(startIndex + n)
     else
       this
@@ -159,7 +165,7 @@ override def companion: GenericCompanion[Vector] = Vector
   override def drop(n: Int): Vector[A] = {
     if (n <= 0)
       this
-    else if (startIndex + n < endIndex)
+    else if (startIndex < endIndex - n)
       dropFront0(startIndex + n)
     else
       Vector.empty
@@ -211,7 +217,8 @@ override def companion: GenericCompanion[Vector] = Vector
 
   // concat (suboptimal but avoids worst performance gotchas)
   override def ++[B >: A, That](that: GenTraversableOnce[B])(implicit bf: CanBuildFrom[Vector[A], B, That]): That = {
-    if (bf eq IndexedSeq.ReusableCBF) {
+    if (isDefaultCBF(bf)) {
+      // We are sure we will create a Vector, so let's do it efficiently
       import Vector.{Log2ConcatFaster, TinyAppendFaster}
       if (that.isEmpty) this.asInstanceOf[That]
       else {
@@ -944,8 +951,6 @@ private[immutable] trait VectorPointer[T] {
     // STUFF BELOW USED BY APPEND / UPDATE
 
     private[immutable] final def copyOf(a: Array[AnyRef]) = {
-      //println("copy")
-      if (a eq null) println ("NULL")
       val b = new Array[AnyRef](a.length)
       Platform.arraycopy(a, 0, b, 0, a.length)
       b
@@ -1149,8 +1154,6 @@ private[immutable] trait VectorPointer[T] {
         if (depth == 3) {
           display3 = new Array(32)
           display3((oldIndex >> 15) & 31) = display2
-          display2 = new Array(32)
-          display1 = new Array(32)
           depth +=1
         }
         display2 = display3((newIndex >> 15) & 31).asInstanceOf[Array[AnyRef]]
@@ -1163,9 +1166,6 @@ private[immutable] trait VectorPointer[T] {
         if (depth == 4) {
           display4 = new Array(32)
           display4((oldIndex >> 20) & 31) = display3
-          display3 = new Array(32)
-          display2 = new Array(32)
-          display1 = new Array(32)
           depth +=1
         }
         display3 = display4((newIndex >> 20) & 31).asInstanceOf[Array[AnyRef]]
@@ -1180,13 +1180,9 @@ private[immutable] trait VectorPointer[T] {
         if (depth == 5) {
           display5 = new Array(32)
           display5((oldIndex >>  25) & 31) = display4
-          display4 = new Array(32)
-          display3 = new Array(32)
-          display2 = new Array(32)
-          display1 = new Array(32)
           depth +=1
         }
-        display4 = display5((newIndex >> 20) & 31).asInstanceOf[Array[AnyRef]]
+        display4 = display5((newIndex >> 25) & 31).asInstanceOf[Array[AnyRef]]
         if (display4 == null) display4 = new Array(32)
         display3 = display4((newIndex >> 20) & 31).asInstanceOf[Array[AnyRef]]
         if (display3 == null) display3 = new Array(32)

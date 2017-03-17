@@ -48,7 +48,7 @@ class HashMap[A, +B] extends AbstractMap[A, B]
 
   def iterator: Iterator[(A,B)] = Iterator.empty
 
-  override def foreach[U](f: ((A, B)) =>  U): Unit = { }
+  override def foreach[U](f: ((A, B)) => U): Unit = ()
 
   def get(key: A): Option[B] =
     get0(key, computeHash(key), 0)
@@ -197,7 +197,7 @@ object HashMap extends ImmutableMapFactory[HashMap] with BitOperations.Int {
           if (this.value.asInstanceOf[AnyRef] eq value.asInstanceOf[AnyRef]) this
           else new HashMap1(key, hash, value, kv)
         } else {
-          val nkv = merger(this.kv, kv)
+          val nkv = merger(this.ensurePair, if(kv != null) kv else (key, value))
           new HashMap1(nkv._1, hash, nkv._2, nkv)
         }
       } else {
@@ -422,7 +422,7 @@ object HashMap extends ImmutableMapFactory[HashMap] with BitOperations.Int {
       final override def getElem(cc: AnyRef): (A, B) = cc.asInstanceOf[HashMap1[A, B]].ensurePair
     }
 
-    override def foreach[U](f: ((A, B)) =>  U): Unit = {
+    override def foreach[U](f: ((A, B)) => U): Unit = {
       var i = 0
       while (i < elems.length) {
         elems(i).foreach(f)

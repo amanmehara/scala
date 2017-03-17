@@ -1022,7 +1022,7 @@ abstract class GenICode extends SubComponent {
         tree match {
           case Literal(Constant(null)) if generatedType == NullReference && expectedType != UNIT =>
             // literal null on the stack (as opposed to a boxed null, see SI-8233),
-            // we can bypass `adapt` which would otherwise emitt a redundant [DROP, CONSTANT(null)]
+            // we can bypass `adapt` which would otherwise emit a redundant [DROP, CONSTANT(null)]
             // except one case: when expected type is UNIT (unboxed) where we need to emit just a DROP
           case _ =>
             adapt(generatedType, expectedType, resCtx, tree.pos)
@@ -2016,7 +2016,7 @@ abstract class GenICode extends SubComponent {
        *
        *  This could result in unreachable code which has to be cleaned up later, e.g. if the try and all the exception
        *  handlers always end in RETURN then there will be no "normal" flow out of the try/catch/finally.
-       *  Later reachability analysis will remove unreacahble code.
+       *  Later reachability analysis will remove unreachable code.
        */
       def Try(body: Context => Context,
               handlers: List[(Symbol, TypeKind, Context => Context)],
@@ -2060,7 +2060,7 @@ abstract class GenICode extends SubComponent {
         if (settings.YdisableUnreachablePrevention || !outerCtx.bb.ignore) {
           if (finalizer != EmptyTree) {
             val exh = outerCtx.newExceptionHandler(NoSymbol, finalizer.pos) // finalizer covers exception handlers
-            this.addActiveHandler(exh)  // .. and body aswell
+            this.addActiveHandler(exh)  // .. and body as well
             val exhStartCtx = finalizerCtx.enterExceptionHandler(exh)
             exhStartCtx.bb killIf outerCtx.bb.ignore
             val exception = exhStartCtx.makeLocal(finalizer.pos, ThrowableTpe, "exc")
@@ -2108,7 +2108,7 @@ abstract class GenICode extends SubComponent {
     /**
      * Represent a label in the current method code. In order
      * to support forward jumps, labels can be created without
-     * having a deisgnated target block. They can later be attached
+     * having a designated target block. They can later be attached
      * by calling `anchor`.
      */
     class Label(val symbol: Symbol) {

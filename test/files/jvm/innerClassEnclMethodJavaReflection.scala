@@ -8,7 +8,7 @@ object Test extends App {
     // Some classes in scala-compiler.jar have references to jline / ant classes, which seem to be
     // not on the classpath. We just skip over those classes.
     // PENDING: for now we also allow missing $anonfun classes: the optimizer may eliminate some closures
-    // that are refferred to in EnclosingClass attributes. SI-9136
+    // that are referred to in EnclosingClass attributes. SI-9136
     val allowedMissingPackages = Set("jline", "org.apache.tools.ant", "$anonfun")
 
     def ok(t: Throwable) = {
@@ -25,12 +25,13 @@ object Test extends App {
 
   def testClasses(jarOrDirectory: String): Unit = {
     val classPath = AbstractFile.getDirectory(new java.io.File(jarOrDirectory))
+    val basePath = classPath.path + "/"
 
-    def flatten(f: AbstractFile): Iterator[AbstractFile] =
-      if (f.isClassContainer) f.iterator.flatMap(flatten)
-      else Iterator(f)
+    def flatten(f: AbstractFile, s: String): Iterator[(AbstractFile, String)] =
+      if (f.isClassContainer) f.iterator.map(ch => (ch, (if(s.isEmpty) "" else s + "/") + ch.name)).flatMap((flatten _).tupled)
+      else Iterator((f, s))
 
-    val classFullNames = flatten(classPath).filter(_.hasExtension("class")).map(_.path.replace("/", ".").replaceAll(".class$", ""))
+    val classFullNames = flatten(classPath, "").filter(_._1.hasExtension("class")).map(_._2.replace("/", ".").replaceAll(".class$", ""))
 
     // it seems that Class objects can only be GC'd together with their class loader
     //   (http://stackoverflow.com/questions/2433261/when-and-how-are-classes-garbage-collected-in-java)

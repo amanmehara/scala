@@ -15,18 +15,32 @@ package interpreter
  *  a transcript should itself be pasteable and should achieve
  *  the same result.
  */
-abstract class Pasted {
-  def ContinueString: String
-  def PromptString: String
-  def interpret(line: String): Unit
+abstract class Pasted(prompt: String) {
+  def interpret(line: String): IR.Result
+  def echo(message: String): Unit
 
-  def matchesPrompt(line: String) = matchesString(line, PromptString)
+  val PromptString    = prompt.lines.toList.last
+  val AltPromptString = "scala> "
+  val ContinuePrompt  = replProps.continuePrompt
+  val ContinueString  = replProps.continueText     // "     | "
+  val anyPrompt = {
+    import scala.util.matching.Regex.quote
+    s"""\\s*(?:${quote(PromptString.trim)}|${quote(AltPromptString.trim)})\\s*""".r
+  }
+
+  def isPrompted(line: String)   = matchesPrompt(line)
+  def isPromptOnly(line: String) = line match { case anyPrompt() => true ; case _ => false }
+
+  private val testBoth = PromptString != AltPromptString
+  private val spacey   = " \t".toSet
+
+  def matchesPrompt(line: String) = matchesString(line, PromptString) || testBoth && matchesString(line, AltPromptString)
   def matchesContinue(line: String) = matchesString(line, ContinueString)
   def running = isRunning
 
   private def matchesString(line: String, target: String): Boolean = (
     (line startsWith target) ||
-    (line.nonEmpty && " \t".toSet(line.head) && matchesString(line.tail, target))
+    (line.nonEmpty && spacey(line.head) && matchesString(line.tail, target))
   )
   private def stripString(line: String, target: String) = line indexOf target match {
     case -1   => line
@@ -39,7 +53,9 @@ abstract class Pasted {
 
   private class PasteAnalyzer(val lines: List[String]) {
     val referenced = lines flatMap (resReference findAllIn _.trim.stripPrefix("res")) toSet
-    val cmds       = lines reduceLeft append split PromptString filterNot (_.trim == "") toList
+    val ActualPromptString = lines find matchesPrompt map (s =>
+      if (matchesString(s, PromptString)) PromptString else AltPromptString) getOrElse PromptString
+    val cmds       = lines reduceLeft append split ActualPromptString filterNot (_.trim == "") toList
 
     /** If it's a prompt or continuation line, strip the formatting bits and
      *  assemble the code.  Otherwise ship it off to be analyzed for res references
@@ -67,10 +83,10 @@ abstract class Pasted {
      */
     def fixResRefs(code: String, line: String) = line match {
       case resCreation(resName) if referenced(resName) =>
-        code.lastIndexOf(PromptString) match {
+        code.lastIndexOf(ActualPromptString) match {
           case -1   => code
           case idx  =>
-            val (str1, str2) = code splitAt (idx + PromptString.length)
+            val (str1, str2) = code splitAt (idx + ActualPromptString.length)
             str2 match {
               case resAssign(`resName`) => code
               case _                    => "%sval %s = { %s }".format(str1, resName, str2)
@@ -79,13 +95,26 @@ abstract class Pasted {
       case _ => code
     }
 
-    def run() {
-      println("// Replaying %d commands from transcript.\n" format cmds.size)
-      cmds foreach { cmd =>
-        print(PromptString)
-        interpret(cmd)
-      }
+    def interpreted(line: String) = {
+      echo(line.trim)
+      val res = interpret(line)
+      if (res != IR.Incomplete) echo("")
+      res
     }
+    def incompletely(cmd: String) = {
+      print(ActualPromptString)
+      interpreted(cmd) == IR.Incomplete
+    }
+    def run(): Option[String] = {
+      echo(s"// Replaying ${cmds.size} commands from transcript.\n")
+      cmds find incompletely
+    }
+  }
+
+  // Run transcript and return incomplete line if any.
+  def transcript(lines: TraversableOnce[String]): Option[String] = {
+    echo("\n// Detected repl transcript. Paste more, or ctrl-D to finish.\n")
+    apply(lines)
   }
 
   /** Commands start on lines beginning with "scala>" and each successive
@@ -93,9 +122,10 @@ abstract class Pasted {
    *  Everything else is discarded.  When the end of the transcript is spotted,
    *  all the commands are replayed.
    */
-  def apply(lines: TraversableOnce[String]) = {
+  def apply(lines: TraversableOnce[String]): Option[String] = {
     isRunning = true
-    try new PasteAnalyzer(lines.toList) run()
+    try new PasteAnalyzer(lines.toList).run()
     finally isRunning = false
   }
+  def unapply(line: String): Boolean = isPrompted(line)
 }

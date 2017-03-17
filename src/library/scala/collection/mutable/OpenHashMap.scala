@@ -81,6 +81,9 @@ extends AbstractMap[Key, Value]
     h ^ (h >>> 7) ^ (h >>> 4)
   }
 
+  /** Increase the size of the table.
+    * Copy only the occupied slots, effectively eliminating the deleted slots.
+    */
   private[this] def growTable() = {
     val oldSize = mask + 1
     val newSize = 4 * oldSize
@@ -92,19 +95,26 @@ extends AbstractMap[Key, Value]
     deleted = 0
   }
 
+  /** Return the index of the first slot in the hash table (in probe order)
+    * that either is empty, or is or was last occupied by the given key.
+    */
   private[this] def findIndex(key: Key) : Int = findIndex(key, hashOf(key))
 
+  /** Return the index of the first slot in the hash table (in probe order)
+    * that either is empty, or is or was last occupied by the given key.
+    * 
+    * This method is an optimization for when the hash value is in hand.
+    * 
+    * @param hash hash value for `key`
+    */
   private[this] def findIndex(key: Key, hash: Int): Int = {
-    var j = hash
-
     var index = hash & mask
-    var perturb = index
+    var j = 0
     while(table(index) != null &&
           !(table(index).hash == hash &&
             table(index).key == key)){
-      j = 5 * j + 1 + perturb
-      perturb >>= 5
-      index = j & mask
+      j += 1
+      index = (index + j) & mask
     }
     index
   }
@@ -136,7 +146,11 @@ extends AbstractMap[Key, Value]
       None
     } else {
       val res = entry.value
-      if (entry.value == None) { size += 1; modCount += 1 }
+      if (entry.value == None) {
+        size += 1
+        deleted -= 1
+        modCount += 1
+      }
       entry.value = Some(value)
       res
     }
@@ -155,20 +169,17 @@ extends AbstractMap[Key, Value]
 
   def get(key : Key) : Option[Value] = {
     val hash = hashOf(key)
-
-    var j = hash
     var index = hash & mask
-    var perturb = index
     var entry = table(index)
+    var j = 0
     while(entry != null){
       if (entry.hash == hash &&
           entry.key == key){
         return entry.value
       }
 
-      j = 5 * j + 1 + perturb
-      perturb >>= 5
-      index = j & mask
+      j += 1
+      index = (index + j) & mask
       entry = table(index)
     }
     None

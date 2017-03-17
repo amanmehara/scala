@@ -110,7 +110,7 @@ trait Namers extends MethodSynthesis {
     protected def owner       = context.owner
     def contextFile = context.unit.source.file
     def typeErrorHandler[T](tree: Tree, alt: T): PartialFunction[Throwable, T] = {
-      case ex: TypeError =>
+      case ex: TypeError if !global.propagateCyclicReferences =>
         // H@ need to ensure that we handle only cyclic references
         TypeSigError(tree, ex)
         alt
@@ -145,8 +145,8 @@ trait Namers extends MethodSynthesis {
         // while Scala's enum constants live directly in the class.
         // We don't check for clazz.superClass == JavaEnumClass, because this causes a illegal
         // cyclic reference error. See the commit message for details.
-        if (context.unit.isJava) owner.companionClass.hasEnumFlag else owner.hasEnumFlag
-      vd.mods.hasAllFlags(ENUM | STABLE | STATIC) && ownerHasEnumFlag
+        if (context.unit.isJava) owner.companionClass.hasJavaEnumFlag else owner.hasJavaEnumFlag
+      vd.mods.hasAllFlags(JAVA_ENUM | STABLE | STATIC) && ownerHasEnumFlag
     }
 
     def setPrivateWithin[T <: Symbol](tree: Tree, sym: T, mods: Modifiers): T =
@@ -204,7 +204,7 @@ trait Namers extends MethodSynthesis {
     }
 
     // FIXME - this logic needs to be thoroughly explained
-    // and justified.  I know it's wrong with repect to package
+    // and justified.  I know it's wrong with respect to package
     // objects, but I think it's also wrong in other ways.
     protected def conflict(newS: Symbol, oldS: Symbol) = (
        (   !oldS.isSourceMethod
@@ -610,7 +610,15 @@ trait Namers extends MethodSynthesis {
       noDuplicates(selectors map (_.rename), AppearsTwice)
     }
 
-    def enterCopyMethod(copyDef: DefDef): Symbol = {
+    class CompleterWrapper(completer: TypeCompleter) extends TypeCompleter {
+      val tree = completer.tree
+
+      override def complete(sym: Symbol): Unit = {
+        completer.complete(sym)
+      }
+    }
+
+    def copyMethodCompleter(copyDef: DefDef): TypeCompleter = {
       val sym      = copyDef.symbol
       val lazyType = completerOf(copyDef)
 
@@ -629,13 +637,72 @@ trait Namers extends MethodSynthesis {
         )
       }
 
-      sym setInfo {
-        mkTypeCompleter(copyDef) { sym =>
-          assignParamTypes()
-          lazyType complete sym
-        }
+      mkTypeCompleter(copyDef) { sym =>
+        assignParamTypes()
+        lazyType complete sym
       }
     }
+
+    // for apply/unapply, which may need to disappear when they clash with a user-defined method of matching signature
+    def applyUnapplyMethodCompleter(un_applyDef: DefDef, companionContext: Context): TypeCompleter =
+      new CompleterWrapper(completerOf(un_applyDef)) {
+        override def complete(sym: Symbol): Unit = {
+          assert(sym hasAllFlags CASE | SYNTHETIC, sym.defString)
+
+          super.complete(sym)
+
+          // owner won't be locked
+          val ownerInfo = companionContext.owner.info
+
+          // If there's a same-named locked symbol, we're currently completing its signature.
+          // If `scopePartiallyCompleted`, the program is known to have a type error, since
+          // this means a user-defined method is missing a result type while its rhs refers to `sym` or an overload.
+          // This is an error because overloaded/recursive methods must have a result type.
+          // The method would be overloaded if its signature, once completed, would not match the synthetic method's,
+          // or recursive if it turned out we should unlink our synthetic method (matching sig).
+          // In any case, error out. We don't unlink the symbol so that `symWasOverloaded` says yes,
+          // which would be wrong if the method is in fact recursive, but it seems less confusing.
+          val scopePartiallyCompleted = new HasMember(ownerInfo, sym.name, BridgeFlags | SYNTHETIC, LOCKED).apply()
+
+          // Check `scopePartiallyCompleted` first to rule out locked symbols from the owner.info.member call,
+          // as FindMember will call info on a locked symbol (while checking type matching to assemble an overloaded type),
+          // and throw a TypeError, so that we are aborted.
+          // Do not consider deferred symbols, as suppressing our concrete implementation would be an error regardless
+          // of whether the signature matches (if it matches, we omitted a valid implementation, if it doesn't,
+          // we would get an error for the missing implementation it isn't implemented by some overload other than our synthetic one)
+          val suppress = scopePartiallyCompleted || {
+            // can't exclude deferred members using DEFERRED flag here (TODO: why?)
+            val userDefined = ownerInfo.memberBasedOnName(sym.name, BridgeFlags | SYNTHETIC)
+
+            (userDefined != NoSymbol) && {
+              assert(userDefined != sym)
+              val alts = userDefined.alternatives // could be just the one, if this member isn't overloaded
+              // don't compute any further `memberInfo`s if there's an error somewhere
+              alts.exists(_.isErroneous) || {
+                val self = companionContext.owner.thisType
+                val memberInfo = self.memberInfo(sym)
+                alts.exists(alt => !alt.isDeferred && (self.memberInfo(alt) matches memberInfo))
+              }
+            }
+          }
+
+          if (suppress) {
+            sym setInfo ErrorType
+            sym setFlag IS_ERROR
+
+            // Don't unlink in an error situation to generate less confusing error messages.
+            // Ideally, our error reporting would distinguish overloaded from recursive user-defined apply methods without signature,
+            // but this would require some form of partial-completion of method signatures, so that we can
+            // know what the argument types were, even though we can't complete the result type, because
+            // we hit a cycle while trying to compute it (when we get here with locked user-defined symbols, we
+            // are in the complete for that symbol, and thus the locked symbol has not yet received enough info;
+            // I hesitate to provide more info, because it would involve a WildCard or something for its result type,
+            // which could upset other code paths)
+            if (!scopePartiallyCompleted)
+              companionContext.scope.unlink(sym)
+          }
+        }
+      }
 
     def completerOf(tree: Tree): TypeCompleter = {
       val mono = namerOf(tree.symbol) monoTypeCompleter tree
@@ -697,11 +764,15 @@ trait Namers extends MethodSynthesis {
         val bridgeFlag = if (mods hasAnnotationNamed tpnme.bridgeAnnot) BRIDGE | ARTIFACT else 0
         val sym = assignAndEnterSymbol(tree) setFlag bridgeFlag
 
-        if (name == nme.copy && sym.isSynthetic)
-          enterCopyMethod(tree)
-        else
-          sym setInfo completerOf(tree)
-    }
+        val completer =
+          if (sym hasFlag SYNTHETIC) {
+            if (name == nme.copy) copyMethodCompleter(tree)
+            else if (sym hasFlag CASE) applyUnapplyMethodCompleter(tree, context)
+            else completerOf(tree)
+          } else completerOf(tree)
+
+        sym setInfo completer
+      }
 
     def enterClassDef(tree: ClassDef) {
       val ClassDef(mods, _, _, impl) = tree
@@ -912,12 +983,33 @@ trait Namers extends MethodSynthesis {
 
     private def templateSig(templ: Template): Type = {
       val clazz = context.owner
+
+      val parentTrees = typer.typedParentTypes(templ)
+
+      val pending = mutable.ListBuffer[AbsTypeError]()
+      parentTrees foreach { tpt =>
+        val ptpe = tpt.tpe
+        if(!ptpe.isError) {
+          val psym = ptpe.typeSymbol
+          val sameSourceFile = context.unit.source.file == psym.sourceFile
+
+          if (psym.isSealed && !phase.erasedTypes)
+            if (sameSourceFile)
+              psym addChild context.owner
+            else
+              pending += ParentSealedInheritanceError(tpt, psym)
+          if (psym.isLocalToBlock && !phase.erasedTypes)
+            psym addChild context.owner
+        }
+      }
+      pending.foreach(ErrorUtils.issueTypeError)
+
       def checkParent(tpt: Tree): Type = {
         if (tpt.tpe.isError) AnyRefTpe
         else tpt.tpe
       }
 
-      val parents = typer.typedParentTypes(templ) map checkParent
+      val parents = parentTrees map checkParent
 
       enterSelf(templ.self)
 
@@ -1106,7 +1198,7 @@ trait Namers extends MethodSynthesis {
        * As a first side effect, this method assigns a MethodType constructed using this
        * return type to `meth`. This allows omitting the result type for recursive methods.
        *
-       * As another side effect, this method also assigns paramter types from the overridden
+       * As another side effect, this method also assigns parameter types from the overridden
        * method to parameters of `meth` that have missing types (the parser accepts missing
        * parameter types under -Yinfer-argument-types).
        */
@@ -1330,7 +1422,7 @@ trait Namers extends MethodSynthesis {
 
             val defTpt =
               // don't mess with tpt's of case copy default getters, because assigning something other than TypeTree()
-              // will break the carefully orchestrated naming/typing logic that involves enterCopyMethod and caseClassCopyMeth
+              // will break the carefully orchestrated naming/typing logic that involves copyMethodCompleter and caseClassCopyMeth
               if (meth.isCaseCopy) TypeTree()
               else {
                 // If the parameter type mentions any type parameter of the method, let the compiler infer the
@@ -1678,6 +1770,12 @@ trait Namers extends MethodSynthesis {
 
   abstract class TypeCompleter extends LazyType {
     val tree: Tree
+    override def forceDirectSuperclasses: Unit = {
+      tree.foreach {
+        case dt: DefTree => global.withPropagateCyclicReferences(Option(dt.symbol).map(_.maybeInitialize))
+        case _ =>
+      }
+    }
   }
 
   def mkTypeCompleter(t: Tree)(c: Symbol => Unit) = new LockingTypeCompleter with FlagAgnosticCompleter {

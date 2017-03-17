@@ -137,4 +137,78 @@ class RangeConsistencyTest {
     assert( (-3 to Int.MaxValue).dropWhile(_ <= 0).length == Int.MaxValue )
     assert( (-3 to Int.MaxValue).span(_ <= 0) match { case (a,b) => a.length == 4 && b.length == Int.MaxValue } )
   }
+  
+  @Test
+  def testSI9348() {
+    // Test exclusive range with (end-start) != 0 (mod step)
+    assert( (0.0f until 0.4f by 0.25f) sameElements List(0.0f, 0.25f) )
+    assert( (1.0 until 2.2 by 0.5) sameElements List(1.0, 1.5, 2.0) )
+    
+    def bd(d: Double) = BigDecimal(d)
+    val bdRange = bd(-10.0) until bd(0.0) by bd(4.5)
+    assert( bdRange sameElements List(bd(-10.0), bd(-5.5), bd(-1.0)) )
+  }
+
+  @Test
+  def test_SI9388()  {
+    val possiblyNotDefaultNumeric = new scala.math.Numeric[Int] {
+      def fromInt(x: Int) = x
+      def minus(x: Int, y: Int): Int = x - y
+      def negate(x: Int): Int = -x
+      def plus(x: Int, y: Int): Int = x + y
+      def times(x: Int, y: Int): Int = x*y
+      def toDouble(x: Int): Double = x.toDouble
+      def toFloat(x: Int): Float = x.toFloat
+      def toInt(x: Int): Int = x
+      def toLong(x: Int): Long = x.toLong
+      def compare(x: Int, y: Int) = x compare y
+    }
+    val r = (Int.MinValue to Int.MaxValue by (1<<23))
+    val nr = NumericRange(Int.MinValue, Int.MaxValue, 1 << 23)
+    assert({ var i = 0; r.foreach(_ => i += 1); i } == 512)
+    assert({ var i = 0; nr.foreach(_ => i += 1); i } == 512)
+    assert(r.sum == Int.MinValue)
+    assert(nr.sum == Int.MinValue)
+    assert(r.sum(possiblyNotDefaultNumeric) == Int.MinValue)
+    assert(nr.sum(possiblyNotDefaultNumeric) == Int.MinValue)
+  }
+
+  @Test
+  def test_SI10086()  {
+    implicit val customIntegral =
+      new Numeric.IntIsIntegral with Ordering.IntOrdering {}
+
+    val nr = NumericRange(1, 10, 1)
+    assert(nr.min == 1)
+    assert(nr.max == 9)
+
+    // Also test with custom ordering.
+    assert(nr.min(customIntegral.reverse) == 9)
+    assert(nr.max(customIntegral.reverse) == 1)
+
+    case class A(v: Int)
+
+    implicit object aIsIntegral extends scala.math.Integral[A] {
+      def compare(x: A, y: A): Int = x.v.compare(y.v)
+      def fromInt(x: Int): A = A(x)
+      def minus(x: A, y: A): A = A(x.v - y.v)
+      def negate(x: A): A = A(-x.v)
+      def plus(x: A, y: A): A = A(x.v + y.v)
+      def times(x: A, y: A): A = A(x.v * y.v)
+      def quot(x: A, y: A): A = A(x.v / y.v)
+      def rem(x: A, y: A): A = A(x.v % y.v)
+      def toDouble(x: A): Double = x.v.toDouble
+      def toFloat(x: A): Float = x.v.toFloat
+      def toInt(x: A): Int = x.v
+      def toLong(x: A): Long = x.v.toLong
+    }
+
+    val r = NumericRange(A(1), A(10), A(1))
+    assert(r.min == A(1))
+    assert(r.max == A(9))
+
+    // Also test with custom ordering.
+    assert(r.min(aIsIntegral.reverse) == A(9))
+    assert(r.max(aIsIntegral.reverse) == A(1))
+  }
 }

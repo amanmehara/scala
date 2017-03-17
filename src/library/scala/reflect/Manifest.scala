@@ -157,6 +157,9 @@ object ManifestFactory {
     override def newArray(len: Int): Array[Unit] = new Array[Unit](len)
     override def newWrappedArray(len: Int): WrappedArray[Unit] = new WrappedArray.ofUnit(new Array[Unit](len))
     override def newArrayBuilder(): ArrayBuilder[Unit] = new ArrayBuilder.ofUnit()
+    override protected def arrayClass[T](tp: Class[_]): Class[Array[T]] =
+      if (tp eq runtimeClass) classOf[Array[scala.runtime.BoxedUnit]].asInstanceOf[Class[Array[T]]]
+      else super.arrayClass(tp)
     private def readResolve(): Any = Manifest.Unit
   }
 
@@ -248,7 +251,7 @@ object ManifestFactory {
   def arrayType[T](arg: Manifest[_]): Manifest[Array[T]] =
     arg.asInstanceOf[Manifest[T]].arrayManifest
 
-  /** Manifest for the abstract type `prefix # name'. `upperBound` is not
+  /** Manifest for the abstract type `prefix # name`. `upperBound` is not
     * strictly necessary as it could be obtained by reflection. It was
     * added so that erasure can be calculated without reflection. */
   def abstractType[T](prefix: Manifest[_], name: String, upperBound: Predef.Class[_], args: Manifest[_]*): Manifest[T] =
@@ -269,7 +272,7 @@ object ManifestFactory {
         (if (upperBound eq Nothing) "" else " <: "+upperBound)
     }
 
-  /** Manifest for the intersection type `parents_0 with ... with parents_n'. */
+  /** Manifest for the intersection type `parents_0 with ... with parents_n`. */
   def intersectionType[T](parents: Manifest[_]*): Manifest[T] =
     new Manifest[T] {
       def runtimeClass = parents.head.runtimeClass

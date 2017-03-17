@@ -56,7 +56,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     new FreeTypeSymbol(name, origin) initFlags flags
 
   /**
-   * This map stores the original owner the the first time the owner of a symbol is re-assigned.
+   * This map stores the original owner the first time the owner of a symbol is re-assigned.
    * The original owner of a symbol is needed in some places in the backend. Ideally, owners should
    * be versioned like the type history.
    */
@@ -110,6 +110,16 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     def knownDirectSubclasses = {
       // See `getFlag` to learn more about the `isThreadsafe` call in the body of this method.
       if (!isCompilerUniverse && !isThreadsafe(purpose = AllOps)) initialize
+
+      enclosingPackage.info.decls.foreach { sym =>
+        if(sourceFile == sym.sourceFile) {
+          sym.rawInfo.forceDirectSuperclasses
+        }
+      }
+
+      if(!isPastTyper)
+        updateAttachment(KnownDirectSubclassesCalled)
+
       children
     }
 
@@ -495,9 +505,22 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
      *  failure to the point when that name is used for something, which is
      *  often to the point of never.
      */
-    def newStubSymbol(name: Name, missingMessage: String): Symbol = name match {
-      case n: TypeName  => new StubClassSymbol(this, n, missingMessage)
+    def newStubSymbol(name: Name, missingMessage: String, isPackage: Boolean = false): Symbol = name match {
+      case n: TypeName  => if (isPackage) new StubPackageClassSymbol(this, n, missingMessage) else new StubClassSymbol(this, n, missingMessage)
       case _            => new StubTermSymbol(this, name.toTermName, missingMessage)
+    }
+
+    /** Given a field, construct a term symbol that represents the source construct that gave rise the field */
+    def sugaredSymbolOrSelf = {
+      val getter = getterIn(owner)
+      if (getter == NoSymbol) {
+        this
+      } else {
+        val result = owner.newValue(getter.name.toTermName, newFlags = getter.flags & ~Flags.METHOD).setPrivateWithin(getter.privateWithin).setInfo(getter.info.resultType)
+        val setter = setterIn(owner)
+        if (setter != NoSymbol) result.setFlag(Flags.MUTABLE)
+        result
+      }
     }
 
 // ----- locking and unlocking ------------------------------------------------------
@@ -732,7 +755,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     final def flags: Long = {
       if (Statistics.hotEnabled) Statistics.incCounter(flagsCount)
       val fs = _rawflags & phase.flagMask
-      (fs | ((fs & LateFlags) >>> LateShift)) & ~(fs >>> AntiShift)
+      (fs | ((fs & LateFlags) >>> LateShift)) & ~((fs & AntiFlags) >>> AntiShift)
     }
     def flags_=(fs: Long) = _rawflags = fs
     def rawflags_=(x: Long) { _rawflags = x }
@@ -987,7 +1010,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
           || isLocalToBlock
          )
     )
-    /** Is this symbol effectively final or a concrete term member of sealed class whose childred do not override it */
+    /** Is this symbol effectively final or a concrete term member of sealed class whose children do not override it */
     final def isEffectivelyFinalOrNotOverridden: Boolean = isEffectivelyFinal || (isTerm && !isDeferred && isNotOverridden)
 
     /** Is this symbol owned by a package? */
@@ -1153,7 +1176,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
      *    phase check (if after flatten) in the (overridden) method "def owner" in
      *    ModuleSymbol / ClassSymbol. The `rawowner` field is not modified.
      *  - Owners are also changed in other situations, for example when moving trees into a new
-     *    lexical context, e.g. in the named/default arguments tranformation, or when translating
+     *    lexical context, e.g. in the named/default arguments transformation, or when translating
      *    extension method definitions.
      *
      * In general when seeking the owner of a symbol, one should call `owner`.
@@ -1243,8 +1266,9 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     /** These should be moved somewhere like JavaPlatform.
      */
     def javaSimpleName: Name = addModuleSuffix(simpleName.dropLocal)
-    def javaBinaryName: Name = addModuleSuffix(fullNameInternal('/'))
-    def javaClassName: String  = addModuleSuffix(fullNameInternal('.')).toString
+    def javaBinaryName: Name = name.newName(javaBinaryNameString)
+    def javaBinaryNameString: String = fullName('/', moduleSuffix)
+    def javaClassName: String  = fullName('.', moduleSuffix)
 
     /** The encoded full path name of this symbol, where outer names and inner names
      *  are separated by `separator` characters.
@@ -1252,18 +1276,29 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
      *  Never adds id.
      *  Drops package objects.
      */
-    final def fullName(separator: Char): String = fullNameAsName(separator).toString
+    final def fullName(separator: Char): String = fullName(separator, "")
 
-    /** Doesn't drop package objects, for those situations (e.g. classloading)
-     *  where the true path is needed.
-     */
-    private def fullNameInternal(separator: Char): Name = (
-      if (isRoot || isRootPackage || this == NoSymbol) name
-      else if (owner.isEffectiveRoot) name
-      else effectiveOwner.enclClass.fullNameAsName(separator) append (separator, name)
-    )
+    private def fullName(separator: Char, suffix: CharSequence): String = {
+      var b: java.lang.StringBuffer = null
+      def loop(size: Int, sym: Symbol): Unit = {
+        val symName = sym.name
+        val nSize = symName.length - (if (symName.endsWith(nme.LOCAL_SUFFIX_STRING)) 1 else 0)
+        if (sym.isRoot || sym.isRootPackage || sym == NoSymbol || sym.owner.isEffectiveRoot) {
+          val capacity = size + nSize
+          b = new java.lang.StringBuffer(capacity)
+          b.append(chrs, symName.start, nSize)
+        } else {
+          loop(size + nSize + 1, sym.effectiveOwner.enclClass)
+          b.append(separator)
+          b.append(chrs, symName.start, nSize)
+        }
+      }
+      loop(suffix.length(), this)
+      b.append(suffix)
+      b.toString
+    }
 
-    def fullNameAsName(separator: Char): Name = fullNameInternal(separator).dropLocal
+    def fullNameAsName(separator: Char): Name = name.newName(fullName(separator, ""))
 
     /** The encoded full path name of this symbol, where outer names and inner names
      *  are separated by periods.
@@ -2113,7 +2148,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     /** The package class containing this symbol, or NoSymbol if there
      *  is not one.
      *  TODO: formulate as enclosingSuchThat, after making sure
-     *        we can start with current symbol rather than onwner.
+     *        we can start with current symbol rather than owner.
      *  TODO: Also harmonize with enclClass, enclMethod etc.
      */
     def enclosingPackageClass: Symbol = {
@@ -3326,7 +3361,12 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
 
     private[this] var childSet: Set[Symbol] = Set()
     override def children = childSet
-    override def addChild(sym: Symbol) { childSet = childSet + sym }
+    override def addChild(sym: Symbol) {
+      if(!isPastTyper && hasAttachment[KnownDirectSubclassesCalled.type] && !childSet.contains(sym))
+        globalError(s"knownDirectSubclasses of ${this.name} observed before subclass ${sym.name} registered")
+
+      childSet = childSet + sym
+    }
 
     def anonOrRefinementString = {
       if (hasCompleteInfo) {
@@ -3469,6 +3509,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     override def companionSymbol = fail(NoSymbol)
   }
   class StubClassSymbol(owner0: Symbol, name0: TypeName, val missingMessage: String) extends ClassSymbol(owner0, owner0.pos, name0) with StubSymbol
+  class StubPackageClassSymbol(owner0: Symbol, name0: TypeName, val missingMessage: String) extends PackageClassSymbol(owner0, owner0.pos, name0) with StubSymbol
   class StubTermSymbol(owner0: Symbol, name0: TermName, val missingMessage: String) extends TermSymbol(owner0, owner0.pos, name0) with StubSymbol
 
   trait FreeSymbol extends Symbol {

@@ -10,7 +10,6 @@ package nsc
 import java.io.{ File, FileOutputStream, PrintWriter, IOException, FileNotFoundException }
 import java.net.URL
 import java.nio.charset.{ Charset, CharsetDecoder, IllegalCharsetNameException, UnsupportedCharsetException }
-import scala.compat.Platform.currentTime
 import scala.collection.{ mutable, immutable }
 import io.{ SourceReader, AbstractFile, Path }
 import reporters.{ Reporter, ConsoleReporter }
@@ -215,6 +214,19 @@ class Global(var currentSettings: Settings, var reporter: Reporter)
     }
   }
 
+  private var propCnt = 0
+  @inline final def withPropagateCyclicReferences[T](t: => T): T = {
+    try {
+      propCnt = propCnt+1
+      t
+    } finally {
+      propCnt = propCnt-1
+      assert(propCnt >= 0)
+    }
+  }
+
+  def propagateCyclicReferences: Boolean = propCnt > 0
+
   /** Representing ASTs as graphs */
   object treeBrowsers extends {
     val global: Global.this.type = Global.this
@@ -232,7 +244,7 @@ class Global(var currentSettings: Settings, var reporter: Reporter)
   /** Called from parser, which signals hereby that a method definition has been parsed. */
   def signalParseProgress(pos: Position) {}
 
-  /** Called by ScalaDocAnalyzer when a doc comment has been parsed. */
+  /** Called by ScaladocAnalyzer when a doc comment has been parsed. */
   def signalParsedDocComment(comment: String, pos: Position) = {
     // TODO: this is all very broken (only works for scaladoc comments, not regular ones)
     //       --> add hooks to parser and refactor Interactive global to handle comments directly
@@ -1487,6 +1499,8 @@ class Global(var currentSettings: Settings, var reporter: Reporter)
       compileUnitsInternal(units, fromPhase)
 
     private def compileUnitsInternal(units: List[CompilationUnit], fromPhase: Phase) {
+      def currentTime = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime())
+
       units foreach addUnit
       val startTime = currentTime
 
@@ -1674,23 +1688,28 @@ class Global(var currentSettings: Settings, var reporter: Reporter)
   def getFile(clazz: Symbol, suffix: String): File = getFile(clazz.sourceFile, clazz.fullName split '.', suffix)
 
   private def writeICode() {
-    val printer = new icodes.TextPrinter(null, icodes.linearizer)
-    icodes.classes.values.foreach((cls) => {
-      val moduleSfx = if (cls.symbol.hasModuleFlag) "$" else ""
-      val phaseSfx  = if (settings.debug) phase else "" // only for debugging, appending the full phasename breaks windows build
-      val file      = getFile(cls.symbol, s"$moduleSfx$phaseSfx.icode")
+    val printer = new icodes.TextPrinter(writer = null, icodes.linearizer)
+    icodes.classes.values foreach { cls =>
+      val file = {
+        val module = if (cls.symbol.hasModuleFlag) "$" else ""
+        val faze   = if (settings.debug) phase.name else f"${phase.id}%02d" // avoid breaking windows build with long filename
+        getFile(cls.symbol, s"$module-$faze.icode")
+      }
 
       try {
         val stream = new FileOutputStream(file)
         printer.setWriter(new PrintWriter(stream, true))
-        printer.printClass(cls)
-        informProgress("wrote " + file)
+        try
+          printer.printClass(cls)
+        finally
+          stream.close()
+        informProgress(s"wrote $file")
       } catch {
-        case ex: IOException =>
-          if (settings.debug) ex.printStackTrace()
-        globalError("could not write file " + file)
+        case e: IOException =>
+          if (settings.debug) e.printStackTrace()
+          globalError(s"could not write file $file")
       }
-    })
+    }
   }
   def createJavadoc    = false
 }

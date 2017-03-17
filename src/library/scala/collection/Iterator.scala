@@ -10,7 +10,7 @@ package scala
 package collection
 
 import mutable.ArrayBuffer
-import scala.annotation.migration
+import scala.annotation.{tailrec, migration}
 import immutable.Stream
 import scala.collection.generic.CanBuildFrom
 import scala.annotation.unchecked.{ uncheckedVariance => uV }
@@ -168,8 +168,10 @@ object Iterator {
   private[scala] final class ConcatIterator[+A](private[this] var current: Iterator[A], initial: Vector[() => Iterator[A]]) extends Iterator[A] {
     @deprecated def this(initial: Vector[() => Iterator[A]]) = this(Iterator.empty, initial) // for binary compatibility
     private[this] var queue: Vector[() => Iterator[A]] = initial
+    private[this] var currentHasNextChecked = false
     // Advance current to the next non-empty iterator
     // current is set to null when all iterators are exhausted
+    @tailrec
     private[this] def advance(): Boolean = {
       if (queue.isEmpty) {
         current = null
@@ -178,20 +180,58 @@ object Iterator {
       else {
         current = queue.head()
         queue = queue.tail
-        current.hasNext || advance()
+        if (current.hasNext) {
+          currentHasNextChecked = true
+          true
+        } else advance()
       }
     }
-    def hasNext = (current ne null) && (current.hasNext || advance())
-    def next()  = if (hasNext) current.next else Iterator.empty.next
+    def hasNext =
+      if (currentHasNextChecked) true
+      else if (current eq null) false
+      else if (current.hasNext) {
+        currentHasNextChecked = true
+        true
+      } else advance()
+    def next()  =
+      if (hasNext) {
+        currentHasNextChecked = false
+        current.next()
+      } else Iterator.empty.next()
 
     override def ++[B >: A](that: => GenTraversableOnce[B]): Iterator[B] =
-      new ConcatIterator(current, queue :+ (() => that.toIterator))
+      if(current eq null) new JoinIterator(Iterator.empty, that)
+      else new ConcatIterator(current, queue :+ (() => that.toIterator))
   }
 
   private[scala] final class JoinIterator[+A](lhs: Iterator[A], that: => GenTraversableOnce[A]) extends Iterator[A] {
+    private[this] var state = 0 // 0: lhs not checked, 1: lhs has next, 2: switched to rhs
     private[this] lazy val rhs: Iterator[A] = that.toIterator
-    def hasNext = lhs.hasNext || rhs.hasNext
-    def next    = if (lhs.hasNext) lhs.next else rhs.next
+    def hasNext = state match {
+      case 0 =>
+        if (lhs.hasNext) {
+          state = 1
+          true
+        } else {
+          state = 2
+          rhs.hasNext
+        }
+      case 1 => true
+      case _ => rhs.hasNext
+    }
+    def next() = state match {
+      case 0 =>
+        if (lhs.hasNext) lhs.next()
+        else {
+          state = 2
+          rhs.next()
+        }
+      case 1 =>
+        state = 0
+        lhs.next()
+      case _ =>
+        rhs.next()
+    }
 
     override def ++[B >: A](that: => GenTraversableOnce[B]) =
       new ConcatIterator(this, Vector(() => that.toIterator))
@@ -392,8 +432,16 @@ trait Iterator[+A] extends TraversableOnce[A] {
    */
   def flatMap[B](f: A => GenTraversableOnce[B]): Iterator[B] = new AbstractIterator[B] {
     private var cur: Iterator[B] = empty
-    def hasNext: Boolean =
-      cur.hasNext || self.hasNext && { cur = f(self.next()).toIterator; hasNext }
+    private def nextCur() { cur = f(self.next()).toIterator }
+    def hasNext: Boolean = {
+      // Equivalent to cur.hasNext || self.hasNext && { nextCur(); hasNext }
+      // but slightly shorter bytecode (better JVM inlining!)
+      while (!cur.hasNext) {
+        if (!self.hasNext) return false
+        nextCur()
+      }
+      true
+    }
     def next(): B = (if (hasNext) cur else empty).next()
   }
 
@@ -405,6 +453,7 @@ trait Iterator[+A] extends TraversableOnce[A] {
    *  @note    Reuse: $consumesAndProducesIterator
    */
   def filter(p: A => Boolean): Iterator[A] = new AbstractIterator[A] {
+    // TODO 2.12 - Make a full-fledged FilterImpl that will reverse sense of p
     private var hd: A = _
     private var hdDefined: Boolean = false
 
@@ -470,13 +519,27 @@ trait Iterator[+A] extends TraversableOnce[A] {
   *  @note     Reuse: $consumesAndProducesIterator
   */
   @migration("`collect` has changed. The previous behavior can be reproduced with `toSeq`.", "2.8.0")
-  def collect[B](pf: PartialFunction[A, B]): Iterator[B] = {
-    val self = buffered
-    new AbstractIterator[B] {
-      private def skip() = while (self.hasNext && !pf.isDefinedAt(self.head)) self.next()
-      def hasNext = { skip(); self.hasNext }
-      def next() = { skip(); pf(self.next()) }
+  def collect[B](pf: PartialFunction[A, B]): Iterator[B] = new AbstractIterator[B] {
+    // Manually buffer to avoid extra layer of wrapping with buffered
+    private[this] var hd: A = _
+    
+    // Little state machine to keep track of where we are
+    // Seek = 0; Found = 1; Empty = -1
+    // Not in vals because scalac won't make them static (@inline def only works with -optimize)
+    // BE REALLY CAREFUL TO KEEP COMMENTS AND NUMBERS IN SYNC!
+    private[this] var status = 0/*Seek*/
+    
+    def hasNext = {
+      while (status == 0/*Seek*/) {
+        if (self.hasNext) {
+          hd = self.next()
+          if (pf.isDefinedAt(hd)) status = 1/*Found*/
+        }
+        else status = -1/*Empty*/
+      }
+      status == 1/*Found*/
     }
+    def next() = if (hasNext) { status = 0/*Seek*/; pf(hd) } else Iterator.empty.next()
   }
 
   /** Produces a collection containing cumulative results of applying the
@@ -578,8 +641,6 @@ trait Iterator[+A] extends TraversableOnce[A] {
    *  @note    Reuse: $consumesOneAndProducesTwoIterators
    */
   def span(p: A => Boolean): (Iterator[A], Iterator[A]) = {
-    val self = buffered
-
     /*
      * Giving a name to following iterator (as opposed to trailing) because
      * anonymous class is represented as a structural type that trailing
@@ -587,32 +648,95 @@ trait Iterator[+A] extends TraversableOnce[A] {
      * handling of structural calls. It's not what's intended here.
      */
     class Leading extends AbstractIterator[A] {
-      val lookahead = new mutable.Queue[A]
-      def advance() = {
-        self.hasNext && p(self.head) && {
-          lookahead += self.next
-          true
+      private[this] var lookahead: mutable.Queue[A] = null
+      private[this] var hd: A = _
+      /* Status is kept with magic numbers
+       *   1 means next element is in hd and we're still reading into this iterator
+       *   0 means we're still reading but haven't found a next element
+       *   -1 means we are done reading into the iterator, so we must rely on lookahead
+       *   -2 means we are done but have saved hd for the other iterator to use as its first element
+       */
+      private[this] var status = 0
+      private def store(a: A) {
+        if (lookahead == null) lookahead = new mutable.Queue[A]
+        lookahead += a
+      }
+      def hasNext = {
+        if (status < 0) (lookahead ne null) && lookahead.nonEmpty
+        else if (status > 0) true
+        else {
+          if (self.hasNext) {
+            hd = self.next()
+            status = if (p(hd)) 1 else -2
+          }
+          else status = -1
+          status > 0
         }
       }
-      def finish() = {
-        while (advance()) ()
-      }
-      def hasNext = lookahead.nonEmpty || advance()
       def next() = {
-        if (lookahead.isEmpty)
-          advance()
-
-        lookahead.dequeue()
+        if (hasNext) {
+          if (status == 1) { status = 0; hd }
+          else lookahead.dequeue()
+        }
+        else empty.next()
       }
+      def finish(): Boolean = status match {
+        case -2 => status = -1 ; true
+        case -1 => false
+        case  1 => store(hd) ; status = 0 ; finish()
+        case  0 => 
+          status = -1
+          while (self.hasNext) {
+            val a = self.next()
+            if (p(a)) store(a)
+            else {
+              hd = a
+              return true
+            }
+          }
+          false
+      }
+      def trailer: A = hd
     }
+    
     val leading = new Leading
+    
     val trailing = new AbstractIterator[A] {
-      private lazy val it = {
-        leading.finish()
-        self
+      private[this] var myLeading = leading
+      /* Status flags meanings:
+       *   -1 not yet accesssed
+       *   0 single element waiting in leading
+       *   1 defer to self
+       */
+      private[this] var status = -1
+      def hasNext = {
+        if (status > 0) self.hasNext
+        else {
+          if (status == 0) true
+          else if (myLeading.finish()) {
+            status = 0
+            true
+          }
+          else {
+            status = 1
+            myLeading = null
+            self.hasNext
+          }
+        }
       }
-      def hasNext = it.hasNext
-      def next() = it.next()
+      def next() = {
+        if (hasNext) {
+          if (status > 0) self.next()
+          else {
+            status = 1
+            val ans = myLeading.trailer
+            myLeading = null
+            ans
+          }
+        }
+        else Iterator.empty.next()
+      }
+            
       override def toString = "unknown-if-empty iterator"
     }
 
@@ -626,18 +750,35 @@ trait Iterator[+A] extends TraversableOnce[A] {
    *  @return  an iterator consisting of the remaining elements
    *  @note    Reuse: $consumesAndProducesIterator
    */
-  def dropWhile(p: A => Boolean): Iterator[A] = {
-    val self = buffered
-    new AbstractIterator[A] {
-      var dropped = false
-      private def skip() =
-        if (!dropped) {
-          while (self.hasNext && p(self.head)) self.next()
-          dropped = true
+  def dropWhile(p: A => Boolean): Iterator[A] = new AbstractIterator[A] {
+    // Magic value: -1 = hasn't dropped, 0 = found first, 1 = defer to parent iterator
+    private[this] var status = -1
+    // Local buffering to avoid double-wrap with .buffered
+    private[this] var fst: A = _
+    def hasNext: Boolean =
+      if (status == 1) self.hasNext
+      else if (status == 0) true
+      else {
+        while (self.hasNext) {
+          val a = self.next()
+          if (!p(a)) {
+            fst = a
+            status = 0
+            return true
+          }
         }
-      def hasNext = { skip(); self.hasNext }
-      def next() = { skip(); self.next() }
-    }
+        status = 1
+        false
+      }
+    def next() = 
+      if (hasNext) {
+        if (status == 1) self.next()
+        else {
+          status = 1
+          fst
+        }
+      }
+      else Iterator.empty.next()
   }
 
   /** Creates an iterator formed from this iterator and another iterator
@@ -747,7 +888,7 @@ trait Iterator[+A] extends TraversableOnce[A] {
    *  @usecase def foreach(f: A => Unit): Unit
    *    @inheritdoc
    */
-  def foreach[U](f: A =>  U) { while (hasNext) f(next()) }
+  def foreach[U](f: A => U) { while (hasNext) f(next()) }
 
   /** Tests whether a predicate holds for all values produced by this iterator.
    *  $mayNotTerminateInf
@@ -785,7 +926,7 @@ trait Iterator[+A] extends TraversableOnce[A] {
    *               is equal (as determined by `==`) to `elem`, `false` otherwise.
    *  @note        Reuse: $consumesIterator
    */
-  def contains(elem: Any): Boolean = exists(_ == elem)
+  def contains(elem: Any): Boolean = exists(_ == elem)    // Note--this seems faster than manual inlining!
 
   /** Finds the first value produced by the iterator satisfying a
    *  predicate, if any.
@@ -797,12 +938,11 @@ trait Iterator[+A] extends TraversableOnce[A] {
    *  @note    Reuse: $consumesIterator
    */
   def find(p: A => Boolean): Option[A] = {
-    var res: Option[A] = None
-    while (res.isEmpty && hasNext) {
-      val e = next()
-      if (p(e)) res = Some(e)
+    while (hasNext) {
+      val a = next()
+      if (p(a)) return Some(a)
     }
-    res
+    None
   }
 
   /** Returns the index of the first produced value satisfying a predicate, or -1.
@@ -815,15 +955,11 @@ trait Iterator[+A] extends TraversableOnce[A] {
    */
   def indexWhere(p: A => Boolean): Int = {
     var i = 0
-    var found = false
-    while (!found && hasNext) {
-      if (p(next())) {
-        found = true
-      } else {
-        i += 1
-      }
+    while (hasNext) {
+      if (p(next())) return i
+      i += 1
     }
-    if (found) i else -1
+    -1
   }
 
   /** Returns the index of the first occurrence of the specified
@@ -837,15 +973,11 @@ trait Iterator[+A] extends TraversableOnce[A] {
    */
   def indexOf[B >: A](elem: B): Int = {
     var i = 0
-    var found = false
-    while (!found && hasNext) {
-      if (next() == elem) {
-        found = true
-      } else {
-        i += 1
-      }
+    while (hasNext) {
+      if (next() == elem) return i
+      i += 1
     }
-    if (found) i else -1
+    -1
   }
 
   /** Creates a buffered iterator from this iterator.

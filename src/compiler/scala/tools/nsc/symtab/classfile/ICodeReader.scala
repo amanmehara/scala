@@ -326,8 +326,8 @@ abstract class ICodeReader extends ClassfileParser {
         case JVM.dconst_0    => code emit CONSTANT(Constant(0.0))
         case JVM.dconst_1    => code emit CONSTANT(Constant(1.0))
 
-        case JVM.bipush      => code.emit(CONSTANT(Constant(u1))); size += 1
-        case JVM.sipush      => code.emit(CONSTANT(Constant(u2))); size += 2
+        case JVM.bipush      => code.emit(CONSTANT(Constant(s1))); size += 1
+        case JVM.sipush      => code.emit(CONSTANT(Constant(s2))); size += 2
         case JVM.ldc         => code.emit(CONSTANT(pool.getConstant(u1))); size += 1
         case JVM.ldc_w       => code.emit(CONSTANT(pool.getConstant(u2))); size += 2
         case JVM.ldc2_w      => code.emit(CONSTANT(pool.getConstant(u2))); size += 2
@@ -452,10 +452,10 @@ abstract class ICodeReader extends ClassfileParser {
 
         case JVM.ishl        => code.emit(CALL_PRIMITIVE(Shift(LSL, INT)))
         case JVM.lshl        => code.emit(CALL_PRIMITIVE(Shift(LSL, LONG)))
-        case JVM.ishr        => code.emit(CALL_PRIMITIVE(Shift(LSR, INT)))
-        case JVM.lshr        => code.emit(CALL_PRIMITIVE(Shift(LSR, LONG)))
-        case JVM.iushr       => code.emit(CALL_PRIMITIVE(Shift(ASR, INT)))
-        case JVM.lushr       => code.emit(CALL_PRIMITIVE(Shift(ASR, LONG)))
+        case JVM.ishr        => code.emit(CALL_PRIMITIVE(Shift(ASR, INT)))
+        case JVM.lshr        => code.emit(CALL_PRIMITIVE(Shift(ASR, LONG)))
+        case JVM.iushr       => code.emit(CALL_PRIMITIVE(Shift(LSR, INT)))
+        case JVM.lushr       => code.emit(CALL_PRIMITIVE(Shift(LSR, LONG)))
         case JVM.iand        => code.emit(CALL_PRIMITIVE(Logical(AND, INT)))
         case JVM.land        => code.emit(CALL_PRIMITIVE(Logical(AND, LONG)))
         case JVM.ior         => code.emit(CALL_PRIMITIVE(Logical(OR, INT)))
@@ -466,7 +466,7 @@ abstract class ICodeReader extends ClassfileParser {
           size += 2
           val local = code.getLocal(u1, INT)
           code.emit(LOAD_LOCAL(local))
-          code.emit(CONSTANT(Constant(u1)))
+          code.emit(CONSTANT(Constant(s1)))
           code.emit(CALL_PRIMITIVE(Arithmetic(ADD, INT)))
           code.emit(STORE_LOCAL(local))
 
@@ -599,7 +599,7 @@ abstract class ICodeReader extends ClassfileParser {
           }
         case JVM.invokedynamic  =>
           // TODO, this is just a place holder. A real implementation must parse the class constant entry
-          debuglog("Found JVM invokedynamic instructionm, inserting place holder ICode INVOKE_DYNAMIC.")
+          debuglog("Found JVM invokedynamic instruction, inserting place holder ICode INVOKE_DYNAMIC.")
           containsInvokeDynamic = true
           val poolEntry = in.nextChar.toInt
           in.skip(2)

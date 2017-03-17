@@ -168,7 +168,8 @@ object RedBlackTree {
   }
 
   /* Based on Stefan Kahrs' Haskell version of Okasaki's Red&Black Trees
-   * http://www.cse.unsw.edu.au/~dons/data/RedBlackTree.html */
+   * Constructing Red-Black Trees, Ralf Hinze: http://www.cs.ox.ac.uk/ralf.hinze/publications/WAAAPL99b.ps.gz
+   * Red-Black Trees in a Functional Setting, Chris Okasaki: https://wiki.rice.edu/confluence/download/attachments/2761212/Okasaki-Red-Black.pdf */
   private[this] def del[A, B](tree: Tree[A, B], k: A)(implicit ordering: Ordering[A]): Tree[A, B] = if (tree eq null) null else {
     def balance(x: A, xv: B, tl: Tree[A, B], tr: Tree[A, B]) = if (isRedTree(tl)) {
       if (isRedTree(tr)) {
@@ -408,11 +409,11 @@ object RedBlackTree {
 
     def cons[B](x: B, xs: NList[B]): NList[B] = new NList(x, xs)
 
-    def foldLeft[A, B](xs: NList[A], z: B)(f: (B, A) => B): B = {
+    def foldLeft[A, B](xs: NList[A], z: B)(op: (B, A) => B): B = {
       var acc = z
       var these = xs
       while (these ne null) {
-        acc = f(acc, these.head)
+        acc = op(acc, these.head)
         these = these.tail
       }
       acc
@@ -515,9 +516,10 @@ object RedBlackTree {
        *
        * According to {@see Integer#numberOfLeadingZeros} ceil(log_2(n)) = (32 - Integer.numberOfLeadingZeros(n - 1))
        *
-       * We also don't store the deepest nodes in the path so the maximum path length is further reduced by one.
+       * Although we don't store the deepest nodes in the path during iteration,
+       * we potentially do so in `startFrom`.
        */
-      val maximumHeight = 2 * (32 - Integer.numberOfLeadingZeros(root.count + 2 - 1)) - 2 - 1
+      val maximumHeight = 2 * (32 - Integer.numberOfLeadingZeros(root.count + 2 - 1)) - 2
       new Array[Tree[A, B]](maximumHeight)
     }
     private[this] var index = 0

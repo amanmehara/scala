@@ -14,7 +14,7 @@ object ClassfileConstants {
   final val JAVA_MAJOR_VERSION = 45
   final val JAVA_MINOR_VERSION = 3
 
-  /** (see http://java.sun.com/docs/books/jvms/second_edition/jvms-clarify.html)
+  /** (see http://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.1)
    *
    *  If the `ACC_INTERFACE` flag is set, the `ACC_ABSTRACT` flag must also
    *  be set (ch. 2.13.1).
@@ -344,10 +344,13 @@ object ClassfileConstants {
       case JAVA_ACC_STATIC     => STATIC
       case JAVA_ACC_ABSTRACT   => if (isAnnotation) 0L else if (isClass) ABSTRACT else DEFERRED
       case JAVA_ACC_INTERFACE  => if (isAnnotation) 0L else TRAIT | INTERFACE | ABSTRACT
+      case JAVA_ACC_ENUM       => JAVA_ENUM
+      case JAVA_ACC_ANNOTATION => JAVA_ANNOTATION
       case _                   => 0L
     }
-    private def translateFlags(jflags: Int, baseFlags: Long, isAnnotation: Boolean, isClass: Boolean): Long = {
-      def translateFlag0(jflags: Int): Long = translateFlag(jflags, isAnnotation, isClass)
+    private def translateFlags(jflags: Int, baseFlags: Long, isClass: Boolean): Long = {
+      val isAnnot = isAnnotation(jflags)
+      def translateFlag0(jflags: Int): Long = translateFlag(jflags, isAnnot, isClass)
       var res: Long = JAVA | baseFlags
       /* fast, elegant, maintainable, pick any two... */
       res |= translateFlag0(jflags & JAVA_ACC_PRIVATE)
@@ -357,17 +360,19 @@ object ClassfileConstants {
       res |= translateFlag0(jflags & JAVA_ACC_STATIC)
       res |= translateFlag0(jflags & JAVA_ACC_ABSTRACT)
       res |= translateFlag0(jflags & JAVA_ACC_INTERFACE)
+      res |= translateFlag0(jflags & JAVA_ACC_ENUM)
+      res |= translateFlag0(jflags & JAVA_ACC_ANNOTATION)
       res
     }
 
     def classFlags(jflags: Int): Long = {
-      translateFlags(jflags, 0, isAnnotation(jflags), isClass = true)
+      translateFlags(jflags, 0, isClass = true)
     }
     def fieldFlags(jflags: Int): Long = {
-      translateFlags(jflags, if ((jflags & JAVA_ACC_FINAL) == 0) MUTABLE else 0 , isAnnotation(jflags), isClass = false)
+      translateFlags(jflags, if ((jflags & JAVA_ACC_FINAL) == 0) MUTABLE else 0 , isClass = false)
     }
     def methodFlags(jflags: Int): Long = {
-      translateFlags(jflags, if ((jflags & JAVA_ACC_BRIDGE) != 0) BRIDGE | ARTIFACT else 0, isAnnotation(jflags), isClass = false)
+      translateFlags(jflags, if ((jflags & JAVA_ACC_BRIDGE) != 0) BRIDGE | ARTIFACT else 0, isClass = false)
     }
   }
   object FlagTranslation extends FlagTranslation { }

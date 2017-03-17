@@ -600,11 +600,11 @@ object JavapClass {
     def parents: List[ClassLoader] = parentsOf(loader)
     /* all file locations */
     def locations = {
-      def alldirs = parents flatMap (_ match {
+      def alldirs = parents flatMap {
         case ucl: ScalaClassLoader.URLClassLoader => ucl.classPathURLs
         case jcl: java.net.URLClassLoader         => jcl.getURLs
         case _ => Nil
-      })
+      }
       val dirs = for (d <- alldirs; if d.getProtocol == "file") yield Path(new JFile(d.toURI))
       dirs
     }
@@ -747,15 +747,15 @@ object JavapClass {
       // on second thought, we don't care about lambda method classes, just the impl methods
       val rev =
       res flatMap {
-        case x @ closure(_, "lambda", _, _) => labdaMethod(x, target)
-          //target.member flatMap (_ => labdaMethod(x, target)) getOrElse s"${target.name}#$$anonfun"
+        case x @ closure(_, "lambda", _, _) => lambdaMethod(x, target)
+          //target.member flatMap (_ => lambdaMethod(x, target)) getOrElse s"${target.name}#$$anonfun"
         case x                              => Some(x)
       }
       rev
     }
     // given C$lambda$$g$n for member g and n in 1..N, find the C.accessor$x
     // and the C.$anonfun$x it forwards to.
-    def labdaMethod(lambda: String, target: Target): Option[String] = {
+    def lambdaMethod(lambda: String, target: Target): Option[String] = {
       import scala.tools.asm.ClassReader
       import scala.tools.asm.Opcodes.INVOKESTATIC
       import scala.tools.asm.tree.{ ClassNode, MethodInsnNode }

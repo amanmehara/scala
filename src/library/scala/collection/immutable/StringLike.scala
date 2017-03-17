@@ -137,6 +137,7 @@ self =>
 
   /** Returns this string with first character converted to upper case.
    * If the first character of the string is capitalized, it is returned unchanged.
+   * This method does not convert characters outside the Basic Multilingual Plane (BMP).
    */
   def capitalize: String =
     if (toString == null) null
@@ -217,8 +218,8 @@ self =>
         pos = thisString.indexOf(separator, prev)
       } while (pos != -1)
 
-      if (prev != thisString.size)
-        res += thisString.substring(prev, thisString.size)
+      if (prev != thisString.length)
+        res += thisString.substring(prev, thisString.length)
 
       val initialResult = res.result()
       pos = initialResult.length

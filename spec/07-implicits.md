@@ -84,7 +84,7 @@ The _parts_ of a type $T$ are:
 - if $T$ is an abstract type, the parts of its upper bound;
 - if $T$ denotes an implicit conversion to a type with a method with argument types $T_1 , \ldots , T_n$ and result type $U$,
   the union of the parts of $T_1 , \ldots , T_n$ and $U$;
-- the parts of quantified (existential or univeral) and annotated types are defined as the parts of the underlying types (e.g., the parts of `T forSome { ... }` are the parts of `T`);
+- the parts of quantified (existential or universal) and annotated types are defined as the parts of the underlying types (e.g., the parts of `T forSome { ... }` are the parts of `T`);
 - in all other cases, just $T$ itself.
 
 Note that packages are internally represented as classes with companion modules to hold the package members.
@@ -357,8 +357,16 @@ they appear and all the resulting evidence parameters are concatenated
 in one implicit parameter section.  Since traits do not take
 constructor parameters, this translation does not work for them.
 Consequently, type-parameters in traits may not be view- or context-bounded.
-Also, a method or class with view- or context bounds may not define any
-additional implicit parameters.
+
+Evidence parameters are prepended to the existing implicit parameter section, if one exists.
+
+For example:
+
+```scala
+def foo[A: M](implicit b: B): C
+// expands to:
+// def foo[A](implicit evidence$1: M[A], b: B): C
+```
 
 ###### Example
 The `<=` method from the [`Ordered` example](#example-ordered) can be declared

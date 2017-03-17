@@ -9,6 +9,7 @@ package opt
 
 import scala.annotation.tailrec
 import scala.tools.asm
+import asm.Handle
 import asm.Opcodes._
 import asm.tree._
 import scala.collection.convert.decorateAsScala._
@@ -26,7 +27,8 @@ class Inliner[BT <: BTypes](val btypes: BT) {
 
   def eliminateUnreachableCodeAndUpdateCallGraph(methodNode: MethodNode, definingClass: InternalName): Unit = {
     localOpt.minimalRemoveUnreachableCode(methodNode, definingClass) foreach {
-      case invocation: MethodInsnNode => callGraph.callsites.remove(invocation)
+      case invocation: MethodInsnNode  => callGraph.callsites.remove(invocation)
+      case indy: InvokeDynamicInsnNode => callGraph.closureInstantiations.remove(indy)
       case _ =>
     }
   }
@@ -49,7 +51,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
       if (callGraph.callsites contains request.callsiteInstruction) {
         val r = inline(request.callsiteInstruction, request.callsiteStackHeight, request.callsiteMethod, request.callsiteClass,
           callee.callee, callee.calleeDeclarationClass,
-          receiverKnownNotNull = false, keepLineNumbers = false)
+          request.receiverKnownNotNull, keepLineNumbers = false)
 
         for (warning <- r) {
           if ((callee.annotatedInline && btypes.compilerSettings.YoptWarningEmitAtInlineFailed) || warning.emitWarning(compilerSettings)) {
@@ -89,7 +91,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
    */
   def selectCallsitesForInlining: List[Callsite] = {
     callsites.valuesIterator.filter({
-      case callsite @ Callsite(_, _, _, Right(Callee(callee, calleeDeclClass, safeToInline, _, annotatedInline, _, warning)), _, _, pos) =>
+      case callsite @ Callsite(_, _, _, Right(Callee(callee, calleeDeclClass, safeToInline, _, annotatedInline, _, warning)), _, _, _, pos) =>
         val res = doInlineCallsite(callsite)
 
         if (!res) {
@@ -112,7 +114,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
 
         res
 
-      case Callsite(ins, _, _, Left(warning), _, _, pos) =>
+      case Callsite(ins, _, _, Left(warning), _, _, _, pos) =>
         if (warning.emitWarning(compilerSettings))
           backendReporting.inlinerWarning(pos, s"failed to determine if ${ins.name} should be inlined:\n$warning")
         false
@@ -123,7 +125,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
    * The current inlining heuristics are simple: inline calls to methods annotated @inline.
    */
   def doInlineCallsite(callsite: Callsite): Boolean = callsite match {
-    case Callsite(_, _, _, Right(Callee(callee, calleeDeclClass, safeToInline, _, annotatedInline, _, warning)), _, _, pos) =>
+    case Callsite(_, _, _, Right(Callee(callee, calleeDeclClass, safeToInline, _, annotatedInline, _, warning)), _, _, _, pos) =>
       if (compilerSettings.YoptInlineHeuristics.value == "everything") safeToInline
       else annotatedInline && safeToInline
 
@@ -189,7 +191,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
           // there's no need to run eliminateUnreachableCode here. building the call graph does that
           // already, no code can become unreachable in the meantime.
           val analyzer = new AsmAnalyzer(callsite.callsiteMethod, callsite.callsiteClass.internalName, new SourceInterpreter)
-          val receiverValue = analyzer.frameAt(callsite.callsiteInstruction).peekDown(traitMethodArgumentTypes.length)
+          val receiverValue = analyzer.frameAt(callsite.callsiteInstruction).peekStack(traitMethodArgumentTypes.length)
           for (i <- receiverValue.insns.asScala) {
             val cast = new TypeInsnNode(CHECKCAST, selfParamType.internalName)
             callsite.callsiteMethod.instructions.insert(i, cast)
@@ -215,6 +217,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
             calleeInfoWarning      = infoWarning)),
           argInfos            = Nil,
           callsiteStackHeight = callsite.callsiteStackHeight,
+          receiverKnownNotNull = callsite.receiverKnownNotNull,
           callsitePosition = callsite.callsitePosition
         )
         callGraph.callsites(newCallsiteInstruction) = staticCallsite
@@ -363,7 +366,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
 
       clonedInstructions.insert(argStores)
 
-      // label for the exit of the inlined functions. xRETURNs are rplaced by GOTOs to this label.
+      // label for the exit of the inlined functions. xRETURNs are replaced by GOTOs to this label.
       val postCallLabel = newLabelNode
       clonedInstructions.add(postCallLabel)
 
@@ -400,7 +403,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
         val inlinedReturn = instructionMap(originalReturn)
         val returnReplacement = new InsnList
 
-        def drop(slot: Int) = returnReplacement add getPop(frame.peekDown(slot).getSize)
+        def drop(slot: Int) = returnReplacement add getPop(frame.peekStack(slot).getSize)
 
         // for non-void methods, store the stack top into the return local variable
         if (hasReturnValue) {
@@ -431,7 +434,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
       callsiteMethod.localVariables.addAll(cloneLocalVariableNodes(callee, labelsMap, callee.name + "_").asJava)
       callsiteMethod.tryCatchBlocks.addAll(cloneTryCatchBlockNodes(callee, labelsMap).asJava)
 
-      // Add all invocation instructions that were inlined to the call graph
+      // Add all invocation instructions and closure instantiations that were inlined to the call graph
       callee.instructions.iterator().asScala foreach {
         case originalCallsiteIns: MethodInsnNode =>
           callGraph.callsites.get(originalCallsiteIns) match {
@@ -444,8 +447,18 @@ class Inliner[BT <: BTypes](val btypes: BT) {
                 callee = originalCallsite.callee,
                 argInfos = Nil, // TODO: re-compute argInfos for new destination (once we actually compute them)
                 callsiteStackHeight = callsiteStackHeight + originalCallsite.callsiteStackHeight,
+                receiverKnownNotNull = originalCallsite.receiverKnownNotNull,
                 callsitePosition = originalCallsite.callsitePosition
               )
+
+            case None =>
+          }
+
+        case indy: InvokeDynamicInsnNode =>
+          callGraph.closureInstantiations.get(indy) match {
+            case Some(closureInit) =>
+              val newIndy = instructionMap(indy).asInstanceOf[InvokeDynamicInsnNode]
+              callGraph.closureInstantiations(newIndy) = ClosureInstantiation(closureInit.lambdaMetaFactoryCall.copy(indy = newIndy), callsiteMethod, callsiteClass)
 
             case None =>
           }
@@ -527,6 +540,90 @@ class Inliner[BT <: BTypes](val btypes: BT) {
   }
 
   /**
+   * Check if a type is accessible to some class, as defined in JVMS 5.4.4.
+   *  (A1) C is public
+   *  (A2) C and D are members of the same run-time package
+   */
+  def classIsAccessible(accessed: BType, from: ClassBType): Either[OptimizerWarning, Boolean] = (accessed: @unchecked) match {
+    // TODO: A2 requires "same run-time package", which seems to be package + classloader (JMVS 5.3.). is the below ok?
+    case c: ClassBType     => c.isPublic.map(_ || c.packageInternalName == from.packageInternalName)
+    case a: ArrayBType     => classIsAccessible(a.elementType, from)
+    case _: PrimitiveBType => Right(true)
+  }
+
+  /**
+   * Check if a member reference is accessible from the [[destinationClass]], as defined in the
+   * JVMS 5.4.4. Note that the class name in a field / method reference is not necessarily the
+   * class in which the member is declared:
+   *
+   *   class A { def f = 0 }; class B extends A { f }
+   *
+   * The INVOKEVIRTUAL instruction uses a method reference "B.f ()I". Therefore this method has
+   * two parameters:
+   *
+   * @param memberDeclClass The class in which the member is declared (A)
+   * @param memberRefClass  The class used in the member reference (B)
+   *
+   * (B0) JVMS 5.4.3.2 / 5.4.3.3: when resolving a member of class C in D, the class C is resolved
+   * first. According to 5.4.3.1, this requires C to be accessible in D.
+   *
+   * JVMS 5.4.4 summary: A field or method R is accessible to a class D (destinationClass) iff
+   *  (B1) R is public
+   *  (B2) R is protected, declared in C (memberDeclClass) and D is a subclass of C.
+   *       If R is not static, R must contain a symbolic reference to a class T (memberRefClass),
+   *       such that T is either a subclass of D, a superclass of D, or D itself.
+   *       Also (P) needs to be satisfied.
+   *  (B3) R is either protected or has default access and declared by a class in the same
+   *       run-time package as D.
+   *       If R is protected, also (P) needs to be satisfied.
+   *  (B4) R is private and is declared in D.
+   *
+   *  (P) When accessing a protected instance member, the target object on the stack (the receiver)
+   *      has to be a subtype of D (destinationClass). This is enforced by classfile verification
+   *      (https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.10.1.8).
+   *
+   * TODO: we cannot currently implement (P) because we don't have the necessary information
+   * available. Once we have a type propagation analysis implemented, we can extract the receiver
+   * type from there (https://github.com/scala-opt/scala/issues/13).
+   */
+  def memberIsAccessible(memberFlags: Int, memberDeclClass: ClassBType, memberRefClass: ClassBType, from: ClassBType): Either[OptimizerWarning, Boolean] = {
+    // TODO: B3 requires "same run-time package", which seems to be package + classloader (JMVS 5.3.). is the below ok?
+    def samePackageAsDestination = memberDeclClass.packageInternalName == from.packageInternalName
+    def targetObjectConformsToDestinationClass = false // needs type propagation analysis, see above
+
+    def memberIsAccessibleImpl = {
+      val key = (ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE) & memberFlags
+      key match {
+        case ACC_PUBLIC => // B1
+          Right(true)
+
+        case ACC_PROTECTED => // B2
+          val isStatic = (ACC_STATIC & memberFlags) != 0
+          tryEither {
+            val condB2 = from.isSubtypeOf(memberDeclClass).orThrow && {
+              isStatic || memberRefClass.isSubtypeOf(from).orThrow || from.isSubtypeOf(memberRefClass).orThrow
+            }
+            Right(
+              (condB2 || samePackageAsDestination /* B3 (protected) */) &&
+              (isStatic || targetObjectConformsToDestinationClass) // (P)
+            )
+          }
+
+        case 0 => // B3 (default access)
+          Right(samePackageAsDestination)
+
+        case ACC_PRIVATE => // B4
+          Right(memberDeclClass == from)
+      }
+    }
+
+    classIsAccessible(memberDeclClass, from) match { // B0
+      case Right(true) => memberIsAccessibleImpl
+      case r => r
+    }
+  }
+
+  /**
    * Returns the first instruction in the `instructions` list that would cause a
    * [[java.lang.IllegalAccessError]] when inlined into the `destinationClass`.
    *
@@ -534,67 +631,6 @@ class Inliner[BT <: BTypes](val btypes: BT) {
    * is returned together with a warning message that describes the problem.
    */
   def findIllegalAccess(instructions: InsnList, calleeDeclarationClass: ClassBType, destinationClass: ClassBType): Option[(AbstractInsnNode, Option[OptimizerWarning])] = {
-
-    /**
-     * Check if a type is accessible to some class, as defined in JVMS 5.4.4.
-     *  (A1) C is public
-     *  (A2) C and D are members of the same run-time package
-     */
-    def classIsAccessible(accessed: BType, from: ClassBType = destinationClass): Either[OptimizerWarning, Boolean] = (accessed: @unchecked) match {
-      // TODO: A2 requires "same run-time package", which seems to be package + classloader (JMVS 5.3.). is the below ok?
-      case c: ClassBType     => c.isPublic.map(_ || c.packageInternalName == from.packageInternalName)
-      case a: ArrayBType     => classIsAccessible(a.elementType, from)
-      case _: PrimitiveBType => Right(true)
-    }
-
-    /**
-     * Check if a member reference is accessible from the [[destinationClass]], as defined in the
-     * JVMS 5.4.4. Note that the class name in a field / method reference is not necessarily the
-     * class in which the member is declared:
-     *
-     *   class A { def f = 0 }; class B extends A { f }
-     *
-     * The INVOKEVIRTUAL instruction uses a method reference "B.f ()I". Therefore this method has
-     * two parameters:
-     *
-     * @param memberDeclClass The class in which the member is declared (A)
-     * @param memberRefClass  The class used in the member reference (B)
-     *
-     * JVMS 5.4.4 summary: A field or method R is accessible to a class D (destinationClass) iff
-     *  (B1) R is public
-     *  (B2) R is protected, declared in C (memberDeclClass) and D is a subclass of C.
-     *       If R is not static, R must contain a symbolic reference to a class T (memberRefClass),
-     *       such that T is either a subclass of D, a superclass of D, or D itself.
-     *  (B3) R is either protected or has default access and declared by a class in the same
-     *       run-time package as D.
-     *  (B4) R is private and is declared in D.
-     */
-    def memberIsAccessible(memberFlags: Int, memberDeclClass: ClassBType, memberRefClass: ClassBType): Either[OptimizerWarning, Boolean] = {
-      // TODO: B3 requires "same run-time package", which seems to be package + classloader (JMVS 5.3.). is the below ok?
-      def samePackageAsDestination = memberDeclClass.packageInternalName == destinationClass.packageInternalName
-
-      val key = (ACC_PUBLIC | ACC_PROTECTED | ACC_PRIVATE) & memberFlags
-      key match {
-        case ACC_PUBLIC     =>       // B1
-          Right(true)
-
-        case ACC_PROTECTED  =>       // B2
-          tryEither {
-            val condB2 = destinationClass.isSubtypeOf(memberDeclClass).orThrow && {
-              val isStatic = (ACC_STATIC & memberFlags) != 0
-              isStatic || memberRefClass.isSubtypeOf(destinationClass).orThrow || destinationClass.isSubtypeOf(memberRefClass).orThrow
-            }
-            Right(condB2 || samePackageAsDestination) // B3 (protected)
-          }
-
-        case 0 =>                    // B3 (default access)
-          Right(samePackageAsDestination)
-
-        case ACC_PRIVATE    =>       // B4
-          Right(memberDeclClass == destinationClass)
-      }
-    }
-
     /**
      * Check if `instruction` can be transplanted to `destinationClass`.
      *
@@ -611,18 +647,18 @@ class Inliner[BT <: BTypes](val btypes: BT) {
         // NEW, ANEWARRAY, CHECKCAST or INSTANCEOF. For these instructions, the reference
         // "must be a symbolic reference to a class, array, or interface type" (JVMS 6), so
         // it can be an internal name, or a full array descriptor.
-        classIsAccessible(bTypeForDescriptorOrInternalNameFromClassfile(ti.desc))
+        classIsAccessible(bTypeForDescriptorOrInternalNameFromClassfile(ti.desc), destinationClass)
 
       case ma: MultiANewArrayInsnNode =>
         // "a symbolic reference to a class, array, or interface type"
-        classIsAccessible(bTypeForDescriptorOrInternalNameFromClassfile(ma.desc))
+        classIsAccessible(bTypeForDescriptorOrInternalNameFromClassfile(ma.desc), destinationClass)
 
       case fi: FieldInsnNode =>
         val fieldRefClass = classBTypeFromParsedClassfile(fi.owner)
         for {
           (fieldNode, fieldDeclClassNode) <- byteCodeRepository.fieldNode(fieldRefClass.internalName, fi.name, fi.desc): Either[OptimizerWarning, (FieldNode, InternalName)]
           fieldDeclClass                  =  classBTypeFromParsedClassfile(fieldDeclClassNode)
-          res                             <- memberIsAccessible(fieldNode.access, fieldDeclClass, fieldRefClass)
+          res                             <- memberIsAccessible(fieldNode.access, fieldDeclClass, fieldRefClass, destinationClass)
         } yield {
           res
         }
@@ -638,7 +674,7 @@ class Inliner[BT <: BTypes](val btypes: BT) {
                 Right(destinationClass == calleeDeclarationClass)
 
               case _ => // INVOKEVIRTUAL, INVOKESTATIC, INVOKEINTERFACE and INVOKESPECIAL of constructors
-                memberIsAccessible(methodFlags, methodDeclClass, methodRefClass)
+                memberIsAccessible(methodFlags, methodDeclClass, methodRefClass, destinationClass)
             }
           }
 
@@ -652,12 +688,70 @@ class Inliner[BT <: BTypes](val btypes: BT) {
           }
         }
 
-      case ivd: InvokeDynamicInsnNode =>
-        // TODO @lry check necessary conditions to inline an indy, instead of giving up
-        Right(false)
+      case _: InvokeDynamicInsnNode if destinationClass == calleeDeclarationClass =>
+        // within the same class, any indy instruction can be inlined
+         Right(true)
+
+      // does the InvokeDynamicInsnNode call LambdaMetaFactory?
+      case LambdaMetaFactoryCall(_, _, implMethod, _) =>
+        // an indy instr points to a "call site specifier" (CSP) [1]
+        //  - a reference to a bootstrap method [2]
+        //    - bootstrap method name
+        //    - references to constant arguments, which can be:
+        //      - constant (string, long, int, float, double)
+        //      - class
+        //      - method type (without name)
+        //      - method handle
+        //  - a method name+type
+        //
+        // execution [3]
+        //  - resolve the CSP, yielding the bootstrap method handle, the static args and the name+type
+        //    - resolution entails accessibility checking [4]
+        //  - execute the `invoke` method of the bootstrap method handle (which is signature polymorphic, check its javadoc)
+        //    - the descriptor for the call is made up from the actual arguments on the stack:
+        //      - the first parameters are "MethodHandles.Lookup, String, MethodType", then the types of the constant arguments,
+        //      - the return type is CallSite
+        //    - the values for the call are
+        //      - the bootstrap method handle of the CSP is the receiver
+        //      - the Lookup object for the class in which the callsite occurs (obtained as through calling MethodHandles.lookup())
+        //      - the method name of the CSP
+        //      - the method type of the CSP
+        //      - the constants of the CSP (primitives are not boxed)
+        //  - the resulting `CallSite` object
+        //    - has as `type` the method type of the CSP
+        //    - is popped from the operand stack
+        //  - the `invokeExact` method (signature polymorphic!) of the `target` method handle of the CallSite is invoked
+        //    - the method descriptor is that of the CSP
+        //    - the receiver is the target of the CallSite
+        //    - the other argument values are those that were on the operand stack at the indy instruction (indyLambda: the captured values)
+        //
+        // [1] http://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.4.10
+        // [2] http://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.7.23
+        // [3] http://docs.oracle.com/javase/specs/jvms/se8/html/jvms-6.html#jvms-6.5.invokedynamic
+        // [4] http://docs.oracle.com/javase/specs/jvms/se8/html/jvms-5.html#jvms-5.4.3
+
+        // We cannot generically check if an `invokedynamic` instruction can be safely inlined into
+        // a different class, that depends on the bootstrap method. The Lookup object passed to the
+        // bootstrap method is a capability to access private members of the callsite class. We can
+        // only move the invokedynamic to a new class if we know that the bootstrap method doesn't
+        // use this capability for otherwise non-accessible members.
+        // In the case of indyLambda, it depends on the visibility of the implMethod handle. If
+        // the implMethod is public, lambdaMetaFactory doesn't use the Lookup object's extended
+        // capability, and we can safely inline the instruction into a different class.
+
+        val methodRefClass = classBTypeFromParsedClassfile(implMethod.getOwner)
+        for {
+          (methodNode, methodDeclClassNode) <- byteCodeRepository.methodNode(methodRefClass.internalName, implMethod.getName, implMethod.getDesc): Either[OptimizerWarning, (MethodNode, InternalName)]
+          methodDeclClass                   =  classBTypeFromParsedClassfile(methodDeclClassNode)
+          res                               <- memberIsAccessible(methodNode.access, methodDeclClass, methodRefClass, destinationClass)
+        } yield {
+          res
+        }
+
+      case _: InvokeDynamicInsnNode => Left(UnknownInvokeDynamicInstruction)
 
       case ci: LdcInsnNode => ci.cst match {
-        case t: asm.Type => classIsAccessible(bTypeForDescriptorOrInternalNameFromClassfile(t.getInternalName))
+        case t: asm.Type => classIsAccessible(bTypeForDescriptorOrInternalNameFromClassfile(t.getInternalName), destinationClass)
         case _           => Right(true)
       }
 

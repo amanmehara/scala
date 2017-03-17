@@ -56,7 +56,7 @@ import scala.io.StdIn
  *  only contain natural numbers (i.e. non-negative), and that the result returned
  *  will also be natural. `require` is distinct from `assert` in that if the
  *  condition fails, then the caller of the function is to blame rather than a
- *  logical error having been made within `addNaturals` itself. `ensures` is a
+ *  logical error having been made within `addNaturals` itself. `ensuring` is a
  *  form of `assert` that declares the guarantee the function is providing with
  *  regards to its return value.
  *
@@ -82,6 +82,11 @@ object Predef extends LowPriorityImplicits with DeprecatedPredef {
    */
   def classOf[T]: Class[T] = null // This is a stub method. The actual implementation is filled in by the compiler.
 
+  /** The `String` type in Scala has methods that come either from the underlying
+   *  Java String (see the documentation corresponding to your Java version, for
+   *  example [[http://docs.oracle.com/javase/8/docs/api/java/lang/String.html]]) or
+   *  are added implicitly through [[scala.collection.immutable.StringOps]].
+   */
   type String        = java.lang.String
   type Class[T]      = java.lang.Class[T]
 

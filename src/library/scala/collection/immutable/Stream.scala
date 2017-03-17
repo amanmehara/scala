@@ -153,7 +153,7 @@ import scala.language.implicitConversions
  *
  *  - The fact that `tail` works at all is of interest.  In the definition of
  *  `fibs` we have an initial `(0, 1, Stream(...))` so `tail` is deterministic.
- *  If we deinfed `fibs` such that only `0` were concretely known then the act
+ *  If we defined `fibs` such that only `0` were concretely known then the act
  *  of determining `tail` would require the evaluation of `tail` which would
  *  cause an infinite recursion and stack overflow.  If we define a definition
  *  where the tail is not initially computable then we're going to have an
@@ -176,9 +176,9 @@ import scala.language.implicitConversions
  *    loop(1, 1)
  *  }
  *  }}}
- * 
+ *
  *  Note that `mkString` forces evaluation of a `Stream`, but `addString` does
- *  not.  In both cases, a `Stream` that is or ends in a cycle 
+ *  not.  In both cases, a `Stream` that is or ends in a cycle
  *  (e.g. `lazy val s: Stream[Int] = 0 #:: s`) will convert additional trips
  *  through the cycle to `...`.  Additionally, `addString` will display an
  *  un-memoized tail as `?`.
@@ -508,8 +508,8 @@ self =>
    *
    * @example {{{
    * $naturalsEx
-   * naturalsFrom(1)  10 } filter { _ % 5 == 0 } take 10 mkString(", ")
-   * // produces
+   * naturalsFrom(1) filter { _ % 5 == 0 } take 10 mkString(", ")
+   * // produces "5, 10, 15, 20, 25, 30, 35, 40, 45, 50"
    * }}}
    */
   override def filter(p: A => Boolean): Stream[A] = {
@@ -566,7 +566,7 @@ self =>
       else super.flatMap(f)(bf)
     }
 
-    override def foreach[B](f: A => B) =
+    override def foreach[U](f: A => U) =
       for (x <- self)
         if (p(x)) f(x)
 
@@ -589,7 +589,7 @@ self =>
    *  unless the `f` throws an exception.
    */
   @tailrec
-  override final def foreach[B](f: A => B) {
+  override final def foreach[U](f: A => U) {
     if (!this.isEmpty) {
       f(head)
       tail.foreach(f)
@@ -1180,11 +1180,17 @@ object Stream extends SeqFactory[Stream] {
    *  to streams.
    */
   class ConsWrapper[A](tl: => Stream[A]) {
+    /** Construct a stream consisting of a given first element followed by elements
+     *  from a lazily evaluated Stream.
+     */
     def #::(hd: A): Stream[A] = cons(hd, tl)
+    /** Construct a stream consisting of the concatenation of the given stream and
+     *  a lazily evaluated Stream.
+     */
     def #:::(prefix: Stream[A]): Stream[A] = prefix append tl
   }
 
-  /** A wrapper method that adds `#::` for cons and `#::: for concat as operations
+  /** A wrapper method that adds `#::` for cons and `#:::` for concat as operations
    *  to streams.
    */
   implicit def consWrapper[A](stream: => Stream[A]): ConsWrapper[A] =

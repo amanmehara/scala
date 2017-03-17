@@ -233,7 +233,7 @@ abstract class TreeGen extends scala.reflect.internal.TreeGen with TreeDSL {
   }
 
   /** Return the synchronized part of the double-checked locking idiom around the syncBody tree. It guards with `cond` and
-   *  synchronizez on `clazz.this`. Additional statements can be included after initialization,
+   *  synchronizes on `clazz.this`. Additional statements can be included after initialization,
    *  (outside the synchronized block).
    *
    *  The idiom works only if the condition is using a volatile field.
@@ -261,7 +261,7 @@ abstract class TreeGen extends scala.reflect.internal.TreeGen with TreeDSL {
    * Create a method based on a Function
    *
    * Used both to under `-Ydelambdafy:method` create a lifted function and
-   * under `-Ydelamdafy:inline` to create the apply method on the anonymous
+   * under `-Ydelambdafy:inline` to create the apply method on the anonymous
    * class.
    *
    * It creates a method definition with value params cloned from the

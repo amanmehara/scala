@@ -310,6 +310,11 @@ trait Types
     /** If this is a lazy type, assign a new type to `sym`. */
     def complete(sym: Symbol) {}
 
+    /** If this is a lazy type corresponding to a subclass add it to its
+     *  parents children
+     */
+    def forceDirectSuperclasses: Unit = ()
+
     /** The term symbol associated with the type
       * Note that the symbol of the normalized type is returned (@see normalize)
       */
@@ -732,7 +737,7 @@ trait Types
      *
      * `SubstThisAndSymMap` performs a breadth-first map over this type, which meant that
      * symbol substitution occurred before `ThisType` substitution. Consequently, in substitution
-     * of a `SingleType(ThisType(`from`), sym), symbols were rebound to `from` rather than `to`.
+     * of a `SingleType(ThisType(from), sym)`, symbols were rebound to `from` rather than `to`.
      */
     def substThisAndSym(from: Symbol, to: Type, symsFrom: List[Symbol], symsTo: List[Symbol]): Type =
       if (symsFrom eq symsTo) substThis(from, to)
@@ -756,7 +761,7 @@ trait Types
     /** Apply `f` to each part of this type */
     def foreach(f: Type => Unit) { new ForEachTypeTraverser(f).traverse(this) }
 
-    /** Apply `pf' to each part of this type on which the function is defined */
+    /** Apply `pf` to each part of this type on which the function is defined */
     def collect[T](pf: PartialFunction[Type, T]): List[T] = new CollectTypeCollector(pf).collect(this)
 
     /** Apply `f` to each part of this type; children get mapped before their parents */
@@ -918,7 +923,7 @@ trait Types
     def prefixString = trimPrefix(toString) + "#"
 
    /** Convert toString avoiding infinite recursions by cutting off
-     *  after `maxTostringRecursions` recursion levels. Uses `safeToString`
+     *  after `maxToStringRecursions` recursion levels. Uses `safeToString`
      *  to produce a string on each level.
      */
     override final def toString: String = {
@@ -1489,7 +1494,7 @@ trait Types
           } finally {
             if (Statistics.canEnable) Statistics.popTimer(typeOpsStack, start)
           }
-          // [Martin] suppressing memo-ization solves the problem with "same type after erasure" errors
+          // [Martin] suppressing memoization solves the problem with "same type after erasure" errors
           // when compiling with
           // scalac scala.collection.IterableViewLike.scala scala.collection.IterableLike.scala
           // I have not yet figured out precisely why this is the case.
@@ -2045,7 +2050,7 @@ trait Types
     /** SI-3731, SI-8177: when prefix is changed to `newPre`, maintain consistency of prefix and sym
      *  (where the symbol refers to a declaration "embedded" in the prefix).
      *
-     *  @returns newSym so that `newPre` binds `sym.name` to `newSym`,
+     *  @return newSym so that `newPre` binds `sym.name` to `newSym`,
      *                  to remain consistent with `pre` previously binding `sym.name` to `sym`.
      *
      *  `newSym` and `sym` are conceptually the same symbols, but some change to our `prefix`
@@ -2510,6 +2515,9 @@ trait Types
     override def baseType(clazz: Symbol): Type = resultType.baseType(clazz)
     override def narrow: Type = resultType.narrow
 
+    // SI-9475: PolyTypes with dependent method types are still dependent
+    override def isDependentMethodType = resultType.isDependentMethodType
+
     /** @M: typeDefSig wraps a TypeBounds in a PolyType
      *  to represent a higher-kinded type parameter
      *  wrap lo&hi in polytypes to bind variables
@@ -2588,7 +2596,7 @@ trait Types
      * based on the bounds of the type parameters of the quantified type
      * In Scala syntax, given a java-defined class C[T <: String], the existential type C[_]
      * is improved to C[_ <: String] before skolemization, which captures (get it?) what Java does:
-     * enter the type paramers' bounds into the context when checking subtyping/type equality of existential types
+     * enter the type parameters' bounds into the context when checking subtyping/type equality of existential types
      *
      * Also tried doing this once during class file parsing or when creating the existential type,
      * but that causes cyclic errors because it happens too early.
@@ -3073,13 +3081,43 @@ trait Types
        */
       def unifyFull(tpe: Type): Boolean = {
         def unifySpecific(tp: Type) = {
-          sameLength(typeArgs, tp.typeArgs) && {
-            val lhs = if (isLowerBound) tp.typeArgs else typeArgs
-            val rhs = if (isLowerBound) typeArgs else tp.typeArgs
+          val tpTypeArgs = tp.typeArgs
+          val arityDelta = compareLengths(typeArgs, tpTypeArgs)
+          if (arityDelta == 0) {
+            val lhs = if (isLowerBound) tpTypeArgs else typeArgs
+            val rhs = if (isLowerBound) typeArgs else tpTypeArgs
             // This is a higher-kinded type var with same arity as tp.
             // If so (see SI-7517), side effect: adds the type constructor itself as a bound.
-            isSubArgs(lhs, rhs, params, AnyDepth) && { addBound(tp.typeConstructor); true }
-          }
+            isSubArgs(lhs, rhs, params, AnyDepth) && {addBound(tp.typeConstructor); true}
+          } else if (settings.YpartialUnification && arityDelta < 0 && typeArgs.nonEmpty) {
+            // Simple algorithm as suggested by Paul Chiusano in the comments on SI-2712
+            //
+            //   https://issues.scala-lang.org/browse/SI-2712?focusedCommentId=61270
+            //
+            // Treat the type constructor as curried and partially applied, we treat a prefix
+            // as constants and solve for the suffix. For the example in the ticket, unifying
+            // M[A] with Int => Int this unifies as,
+            //
+            //   M[t] = [t][Int => t]  --> abstract on the right to match the expected arity
+            //   A = Int               --> capture the remainder on the left
+            //
+            // A more "natural" unifier might be M[t] = [t][t => t]. There's lots of scope for
+            // experimenting with alternatives here.
+            val numCaptured = tpTypeArgs.length - typeArgs.length
+            val (captured, abstractedArgs) = tpTypeArgs.splitAt(numCaptured)
+
+            val (lhs, rhs) =
+              if (isLowerBound) (abstractedArgs, typeArgs)
+              else (typeArgs, abstractedArgs)
+
+            isSubArgs(lhs, rhs, params, AnyDepth) && {
+              val tpSym = tp.typeSymbolDirect
+              val abstractedTypeParams = tpSym.typeParams.drop(numCaptured).map(_.cloneSymbol(tpSym))
+
+              addBound(PolyType(abstractedTypeParams, appliedType(tp.typeConstructor, captured ++ abstractedTypeParams.map(_.tpeHK))))
+              true
+            }
+          } else false
         }
         // The type with which we can successfully unify can be hidden
         // behind singleton types and type aliases.
@@ -3853,7 +3891,7 @@ trait Types
    *        any corresponding non-variant type arguments of bt1 and bt2 are the same
    */
   def isPopulated(tp1: Type, tp2: Type): Boolean = {
-    def isConsistent(tp1: Type, tp2: Type): Boolean = (tp1, tp2) match {
+    def isConsistent(tp1: Type, tp2: Type): Boolean = (tp1.dealias, tp2.dealias) match {
       case (TypeRef(pre1, sym1, args1), TypeRef(pre2, sym2, args2)) =>
         assert(sym1 == sym2, (sym1, sym2))
         (    pre1 =:= pre2
@@ -4263,7 +4301,7 @@ trait Types
       matchesType(res1, res2.substSym(tparams2, tparams1), alwaysMatchSimple)
     (tp1, tp2) match {
       case (MethodType(params1, res1), MethodType(params2, res2)) =>
-        params1.length == params2.length && // useful pre-secreening optimization
+        params1.length == params2.length && // useful pre-screening optimization
         matchingParams(params1, params2, tp1.isInstanceOf[JavaMethodType], tp2.isInstanceOf[JavaMethodType]) &&
         matchesType(res1, res2, alwaysMatchSimple) &&
         tp1.isImplicit == tp2.isImplicit

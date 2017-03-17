@@ -114,7 +114,7 @@ trait Internals { self: Universe =>
     def substituteTypes(tree: Tree, from: List[Symbol], to: List[Type]): Tree
 
     /** Substitute given tree `to` for occurrences of nodes that represent
-     *  `C.this`, where `C` referes to the given class `clazz`.
+     *  `C.this`, where `C` refers to the given class `clazz`.
      */
     def substituteThis(tree: Tree, clazz: Symbol, to: Tree): Tree
 
@@ -939,7 +939,7 @@ trait Internals { self: Universe =>
 
   /** Marks underlying reference to id as boxed.
    *
-   *  <b>Precondition:<\b> id must refer to a captured variable
+   *  <b>Precondition:</b> id must refer to a captured variable
    *  A reference such marked will refer to the boxed entity, no dereferencing
    *  with `.elem` is done on it.
    *  This tree node can be emitted by macros such as reify that call referenceCapturedVariable.

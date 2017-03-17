@@ -72,6 +72,37 @@ extends AbstractMap[A, B]
     else Some(e.value)
   }
 
+  override def getOrElseUpdate(key: A, defaultValue: => B): B = {
+    val i = index(elemHashCode(key))
+    val entry = findEntry(key, i)
+    if (entry != null) entry.value
+    else addEntry(createNewEntry(key, defaultValue), i)
+  }
+
+  /* inlined HashTable.findEntry0 to preserve its visibility */
+  private[this] def findEntry(key: A, h: Int): Entry = {
+    var e = table(h).asInstanceOf[Entry]
+    while (notFound(key, e))
+      e = e.next
+    e
+  }
+  private[this] def notFound(key: A, e: Entry): Boolean = (e != null) && !elemEquals(e.key, key)
+
+  /* inlined HashTable.addEntry0 to preserve its visibility */
+  private[this] def addEntry(e: Entry, h: Int): B = {
+    if (tableSize >= threshold) addEntry(e)
+    else addEntry0(e, h)
+    e.value
+  }
+
+  /* extracted to make addEntry inlinable */
+  private[this] def addEntry0(e: Entry, h: Int) {
+    e.next = table(h).asInstanceOf[Entry]
+    table(h) = e
+    tableSize += 1
+    nnSizeMapAdd(h)
+  }
+
   override def put(key: A, value: B): Option[B] = {
     val e = findOrAddEntry(key, value)
     if (e eq null) None
@@ -96,16 +127,16 @@ extends AbstractMap[A, B]
 
   def iterator = entriesIterator map (e => ((e.key, e.value)))
 
-  override def foreach[C](f: ((A, B)) => C): Unit = foreachEntry(e => f((e.key, e.value)))
+  override def foreach[U](f: ((A, B)) => U): Unit = foreachEntry(e => f((e.key, e.value)))
 
   /* Override to avoid tuple allocation in foreach */
   override def keySet: scala.collection.Set[A] = new DefaultKeySet {
-    override def foreach[C](f: A => C) = foreachEntry(e => f(e.key))
+    override def foreach[U](f: A => U) = foreachEntry(e => f(e.key))
   }
 
   /* Override to avoid tuple allocation in foreach */
   override def values: scala.collection.Iterable[B] = new DefaultValuesIterable {
-    override def foreach[C](f: B => C) = foreachEntry(e => f(e.value))
+    override def foreach[U](f: B => U) = foreachEntry(e => f(e.value))
   }
 
   /* Override to avoid tuple allocation */

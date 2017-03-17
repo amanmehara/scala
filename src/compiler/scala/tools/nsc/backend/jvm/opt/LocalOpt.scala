@@ -31,7 +31,7 @@ import scala.tools.nsc.backend.jvm.opt.BytecodeUtils._
  *       catch block, and the recursive invocation is not necessary.
  *
  * simplify jumps
- *   - various simplifications, see doc domments of individual optimizations
+ *   - various simplifications, see doc comments of individual optimizations
  *   + changing or eliminating jumps may render some code unreachable, therefore "simplify jumps" is
  *     executed in a loop with "unreachable code"
  *
@@ -262,7 +262,7 @@ object LocalOptImpls {
    * the same index, but distinct start / end ranges are different variables, they may have not the
    * same type or name.
    */
-  def removeUnusedLocalVariableNodes(method: MethodNode)(fistLocalIndex: Int = parametersSize(method), renumber: Int => Int = identity): Boolean = {
+  def removeUnusedLocalVariableNodes(method: MethodNode)(firstLocalIndex: Int = parametersSize(method), renumber: Int => Int = identity): Boolean = {
     def variableIsUsed(start: AbstractInsnNode, end: LabelNode, varIndex: Int): Boolean = {
       start != end && (start match {
         case v: VarInsnNode if v.`var` == varIndex => true
@@ -276,7 +276,7 @@ object LocalOptImpls {
       val local = localsIter.next()
       val index = local.index
       // parameters and `this` (the lowest indices, starting at 0) are never removed or renumbered
-      if (index >= fistLocalIndex) {
+      if (index >= firstLocalIndex) {
         if (!variableIsUsed(local.start, local.end, index)) localsIter.remove()
         else if (renumber(index) != index) local.index = renumber(index)
       }
@@ -495,7 +495,7 @@ object LocalOptImpls {
    * Replace jumps to a sequence of GOTO instructions by a jump to the final destination.
    *
    *      Jump l;  [any ops];  l: GOTO m;  [any ops];  m: GOTO n;  [any ops];   n: NotGOTO; [...]
-   *   => Jump n;  [rest unchaned]
+   *   => Jump n;  [rest unchanged]
    *
    * If there's a loop of GOTOs, the initial jump is replaced by one of the labels in the loop.
    */

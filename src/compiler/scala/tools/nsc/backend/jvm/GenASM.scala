@@ -307,7 +307,7 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
       if (sym.isBridge) ACC_BRIDGE | ACC_SYNTHETIC else 0,
       if (sym.isArtifact) ACC_SYNTHETIC else 0,
       if (sym.isClass && !sym.isInterface) ACC_SUPER else 0,
-      if (sym.hasEnumFlag) ACC_ENUM else 0,
+      if (sym.hasJavaEnumFlag) ACC_ENUM else 0,
       if (sym.isVarargsMethod) ACC_VARARGS else 0,
       if (sym.hasFlag(Flags.SYNCHRONIZED)) ACC_SYNCHRONIZED else 0
     )
@@ -479,10 +479,6 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
     val CLASS_CONSTRUCTOR_NAME    = "<clinit>"
     val INSTANCE_CONSTRUCTOR_NAME = "<init>"
 
-    val INNER_CLASSES_FLAGS =
-      (asm.Opcodes.ACC_PUBLIC    | asm.Opcodes.ACC_PRIVATE | asm.Opcodes.ACC_PROTECTED |
-       asm.Opcodes.ACC_STATIC    | asm.Opcodes.ACC_INTERFACE | asm.Opcodes.ACC_ABSTRACT | asm.Opcodes.ACC_FINAL)
-
     // -----------------------------------------------------------------------------------------
     // factory methods
     // -----------------------------------------------------------------------------------------
@@ -499,8 +495,8 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
      *        generic classes or interfaces.
      *
      * @param superName the internal of name of the super class. For interfaces,
-     *        the super class is {@link Object}. May be <tt>null</tt>, but
-     *        only for the {@link Object} class.
+     *        the super class is [[Object]]. May be <tt>null</tt>, but
+     *        only for the [[Object]] class.
      *
      * @param interfaces the internal names of the class's interfaces (see
      *        {@link Type#getInternalName() getInternalName}). May be
@@ -536,6 +532,10 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
         case e: java.lang.RuntimeException if e.getMessage != null && (e.getMessage contains "too large!") =>
           reporter.error(sym.pos,
             s"Could not write class $jclassName because it exceeds JVM code size limits. ${e.getMessage}")
+        case e: java.io.IOException if e.getMessage != null && (e.getMessage contains "File name too long")  =>
+          reporter.error(sym.pos, e.getMessage + "\n" +
+            "This can happen on some encrypted or legacy file systems.  Please see SI-3623 for more details.")
+
       }
     }
 
@@ -617,18 +617,16 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
         val internalName = cachedJN.toString()
         val trackedSym = jsymbol(sym)
         reverseJavaName.get(internalName) match {
-          case Some(oldsym) if oldsym.exists && trackedSym.exists =>
-            assert(
-              // In contrast, neither NothingClass nor NullClass show up bytecode-level.
-              (oldsym == trackedSym) || (oldsym == RuntimeNothingClass) || (oldsym == RuntimeNullClass) || (oldsym.isModuleClass && (oldsym.sourceModule == trackedSym.sourceModule)),
-              s"""|Different class symbols have the same bytecode-level internal name:
-                  |     name: $internalName
-                  |   oldsym: ${oldsym.fullNameString}
-                  |  tracked: ${trackedSym.fullNameString}
-              """.stripMargin
-            )
-          case _ =>
+          case None =>
             reverseJavaName.put(internalName, trackedSym)
+          case Some(oldsym) =>
+            // TODO: `duplicateOk` seems pretty ad-hoc (a more aggressive version caused SI-9356 because it called oldSym.exists, which failed in the unpickler; see also SI-5031)
+            def duplicateOk = oldsym == NoSymbol || trackedSym == NoSymbol || (syntheticCoreClasses contains oldsym) || (oldsym.isModuleClass && (oldsym.sourceModule == trackedSym.sourceModule))
+            if (oldsym != trackedSym && !duplicateOk)
+              devWarning(s"""|Different class symbols have the same bytecode-level internal name:
+                             |     name: $internalName
+                             |   oldsym: ${oldsym.fullNameString}
+                             |  tracked: ${trackedSym.fullNameString}""".stripMargin)
         }
       }
 
@@ -758,9 +756,9 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
           val flagsWithFinal: Int = mkFlags(
             // See comment in BTypes, when is a class marked static in the InnerClass table.
             if (isOriginallyStaticOwner(innerSym.originalOwner)) asm.Opcodes.ACC_STATIC else 0,
-            javaFlags(innerSym),
+            (if (innerSym.isJava) javaClassfileFlags(innerSym) else javaFlags(innerSym)) & ~asm.Opcodes.ACC_STATIC,
             if(isDeprecated(innerSym)) asm.Opcodes.ACC_DEPRECATED else 0 // ASM pseudo-access flag
-          ) & (INNER_CLASSES_FLAGS | asm.Opcodes.ACC_DEPRECATED)
+          ) & (BCodeAsmCommon.INNER_CLASSES_FLAGS | asm.Opcodes.ACC_DEPRECATED)
           val flags = if (innerSym.isModuleClass) flagsWithFinal & ~asm.Opcodes.ACC_FINAL else flagsWithFinal // For SI-5676, object overriding.
           val jname = javaName(innerSym)  // never null
           val oname = outerName(innerSym) // null when method-enclosed
@@ -2702,7 +2700,7 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
               case CMPG =>
                 (kind: @unchecked) match {
                   case FLOAT  => emit(Opcodes.FCMPG)
-                  case DOUBLE => emit(Opcodes.DCMPL) // TODO bug? why not DCMPG? http://docs.oracle.com/javase/specs/jvms/se5.0/html/Instructions2.doc3.html
+                  case DOUBLE => emit(Opcodes.DCMPL) // TODO bug? why not DCMPG? http://docs.oracle.com/javase/specs/jvms/se6/html/Instructions2.doc3.html
 
                 }
             }
@@ -3037,7 +3035,7 @@ abstract class GenASM extends SubComponent with BytecodeWriters { self =>
      *
      *  Rationale for this normalization:
      *    test/files/run/private-inline.scala after -optimize is chock full of
-     *    BasicBlocks containing just JUMP(whereTo), where no exception handler straddles them.
+     *    BasicBlocks containing just JUMP(whereto), where no exception handler straddles them.
      *    They should be collapsed by IMethod.normalize() but aren't.
      *    That was fine in FJBG times when by the time the exception table was emitted,
      *    it already contained "anchored" labels (ie instruction offsets were known)

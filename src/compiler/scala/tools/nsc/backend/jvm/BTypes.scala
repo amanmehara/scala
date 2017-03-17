@@ -44,6 +44,8 @@ abstract class BTypes {
 
   val inliner: Inliner[this.type]
 
+  val closureOptimizer: ClosureOptimizer[this.type]
+
   val callGraph: CallGraph[this.type]
 
   val backendReporting: BackendReporting
@@ -646,7 +648,7 @@ abstract class BTypes {
    * JVMS 4.7.7: the attribute must be present "if and only if it represents a local class
    * or an anonymous class" (i.e. not for member classes).
    *
-   * The attribute is mis-named, it should be called "EnclosingClass". It has to be defined for all
+   * The attribute is misnamed, it should be called "EnclosingClass". It has to be defined for all
    * local and anonymous classes, no matter if there is an enclosing method or not. Accordingly, the
    * "class" field (see below) must be always defined, while the "method" field may be null.
    *
@@ -796,7 +798,7 @@ abstract class BTypes {
    *   2. The ClassBType should be built from a classfile, but the class could not be found on the
    *      compilation classpath.
    *
-   * Note that all ClassBTypes required in a non-optimzied run are built during code generation from
+   * Note that all ClassBTypes required in a non-optimized run are built during code generation from
    * the class symbols referenced by the ASTs, so they have a valid info. Therefore the backend
    * often invokes `info.get` (which asserts the info to exist) when reading data from the ClassBType.
    *
@@ -898,7 +900,7 @@ abstract class BTypes {
             // the static flag in the InnerClass table has a special meaning, see InnerClass comment
             i.flags & ~Opcodes.ACC_STATIC,
             if (isStaticNestedClass) Opcodes.ACC_STATIC else 0
-          ) & ClassBType.INNER_CLASSES_FLAGS
+          ) & BCodeAsmCommon.INNER_CLASSES_FLAGS
         )
     })
 
@@ -940,7 +942,7 @@ abstract class BTypes {
      */
     def jvmWiseLUB(other: ClassBType): Either[NoClassBTypeInfo, ClassBType] = {
       def isNotNullOrNothing(c: ClassBType) = !c.isNullType && !c.isNothingType
-      assert(isNotNullOrNothing(this) && isNotNullOrNothing(other), s"jvmWiseLub for null or nothing: $this - $other")
+      assert(isNotNullOrNothing(this) && isNotNullOrNothing(other), s"jvmWiseLUB for null or nothing: $this - $other")
 
       tryEither {
         val res: ClassBType = (this.isInterface.orThrow, other.isInterface.orThrow) match {
@@ -965,7 +967,7 @@ abstract class BTypes {
             firstCommonSuffix(this :: this.superClassesTransitive.orThrow, other :: other.superClassesTransitive.orThrow)
         }
 
-        assert(isNotNullOrNothing(res), s"jvmWiseLub computed: $res")
+        assert(isNotNullOrNothing(res), s"jvmWiseLUB computed: $res")
         Right(res)
       }
     }
@@ -987,17 +989,6 @@ abstract class BTypes {
   }
 
   object ClassBType {
-    /**
-     * Valid flags for InnerClass attribute entry.
-     * See http://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.7.6
-     */
-    private val INNER_CLASSES_FLAGS = {
-      asm.Opcodes.ACC_PUBLIC   | asm.Opcodes.ACC_PRIVATE   | asm.Opcodes.ACC_PROTECTED  |
-      asm.Opcodes.ACC_STATIC   | asm.Opcodes.ACC_FINAL     | asm.Opcodes.ACC_INTERFACE  |
-      asm.Opcodes.ACC_ABSTRACT | asm.Opcodes.ACC_SYNTHETIC | asm.Opcodes.ACC_ANNOTATION |
-      asm.Opcodes.ACC_ENUM
-    }
-
     // Primitive classes have no super class. A ClassBType for those is only created when
     // they are actually being compiled (e.g., when compiling scala/Boolean.scala).
     private val hasNoSuper = Set(
@@ -1135,7 +1126,7 @@ object BTypes {
    *                               The map is indexed by the string s"$name$descriptor" (to
    *                               disambiguate overloads).
    *
-   * @param warning                Contains an warning message if an error occured when building this
+   * @param warning                Contains an warning message if an error occurred when building this
    *                               InlineInfo, for example if some classfile could not be found on
    *                               the classpath. This warning can be reported later by the inliner.
    */

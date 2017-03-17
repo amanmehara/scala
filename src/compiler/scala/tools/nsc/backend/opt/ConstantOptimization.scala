@@ -170,9 +170,11 @@ abstract class ConstantOptimization extends SubComponent {
         // out all the possibilities
         case Impossible(possible2) => (possible -- possible2).nonEmpty
       })
-      def mightNotEqual(other: Contents): Boolean = (this ne other) && (other match {
-        // two Possibles might not be equal if either has possible members that the other doesn't
-        case Possible(possible2) => (possible -- possible2).nonEmpty || (possible2 -- possible).nonEmpty
+      def mightNotEqual(other: Contents): Boolean = (other match {
+        case Possible(possible2) =>
+          // two Possibles must equal if each is known to be of the same, single value
+          val mustEqual = possible.size == 1 && possible == possible2
+          !mustEqual
         case Impossible(_) => true
       })
     }
@@ -246,7 +248,7 @@ abstract class ConstantOptimization extends SubComponent {
         new State(newVariables, stack.tail)
       }
       /**
-       * Load the specified local onto the top of the stack. An error the the local is uninitialized.
+       * Load the specified local onto the top of the stack. An error if the local is uninitialized.
        */
       def load(variable: Local): State = {
         val contents: Contents = locals.getOrElse(variable, sys.error(s"$variable is not initialized"))
@@ -537,14 +539,14 @@ abstract class ConstantOptimization extends SubComponent {
       // number of instructions excluding the last one
       val normalCount = block.size - 1
 
-      val exceptionState = in.cleanStack
+      var exceptionState = in.cleanStack
       var normalExitState = in
       var idx = 0
       while (idx < normalCount) {
         val inst = block(idx)
         normalExitState = interpretInst(normalExitState, inst)
         if (normalExitState.locals ne exceptionState.locals)
-          exceptionState.copy(locals = exceptionState mergeLocals normalExitState.locals)
+          exceptionState = exceptionState.copy(locals = exceptionState mergeLocals normalExitState.locals)
         idx += 1
       }
 

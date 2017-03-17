@@ -56,11 +56,12 @@ class Queue[+A] protected(protected val in: List[A], protected val out: List[A])
    *  @throws java.util.NoSuchElementException if the queue is too short.
    */
   override def apply(n: Int): A = {
-    val len = out.length
-    if (n < len) out.apply(n)
+    val olen = out.length
+    if (n < olen) out.apply(n)
     else {
-      val m = n - len
-      if (m < in.length) in.reverse.apply(m)
+      val m = n - olen
+      val ilen = in.length
+      if (m < ilen) in.apply(ilen - m - 1)
       else throw new NoSuchElementException("index out of range")
     }
   }
@@ -109,7 +110,7 @@ class Queue[+A] protected(protected val in: List[A], protected val out: List[A])
   /** Returns a new queue with all elements provided by an `Iterable` object
    *  added at the end of the queue.
    *
-   *  The elements are prepended in the order they are given out by the
+   *  The elements are appended in the order they are given out by the
    *  iterator.
    *
    *  @param  iter        an iterable object

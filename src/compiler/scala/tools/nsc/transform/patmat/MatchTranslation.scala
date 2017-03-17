@@ -110,25 +110,29 @@ trait MatchTranslation {
 
       // example check: List[Int] <:< ::[Int]
       private def extractorStep(): TranslationStep = {
-        def paramType = extractor.aligner.wholeType
         import extractor.treeMaker
-        // chain a type-testing extractor before the actual extractor call
-        // it tests the type, checks the outer pointer and casts to the expected type
-        // TODO: the outer check is mandated by the spec for case classes, but we do it for user-defined unapplies as well [SPEC]
-        // (the prefix of the argument passed to the unapply must equal the prefix of the type of the binder)
-        lazy val typeTest = TypeTestTreeMaker(binder, binder, paramType, paramType)(pos, extractorArgTypeTest = true)
-        // check whether typetest implies binder is not null,
-        // even though the eventual null check will be on typeTest.nextBinder
-        // it'll be equal to binder casted to paramType anyway (and the type test is on binder)
-        def extraction: TreeMaker = treeMaker(typeTest.nextBinder, typeTest impliesBinderNonNull binder, pos)
 
         // paramType = the type expected by the unapply
         // TODO: paramType may contain unbound type params (run/t2800, run/t3530)
-        val makers = (
+        val makers = {
+          val paramType = extractor.aligner.wholeType
           // Statically conforms to paramType
           if (this ensureConformsTo paramType) treeMaker(binder, false, pos) :: Nil
-          else typeTest :: extraction :: Nil
-        )
+          else {
+            // chain a type-testing extractor before the actual extractor call
+            // it tests the type, checks the outer pointer and casts to the expected type
+            // TODO: the outer check is mandated by the spec for case classes, but we do it for user-defined unapplies as well [SPEC]
+            // (the prefix of the argument passed to the unapply must equal the prefix of the type of the binder)
+            val typeTest = TypeTestTreeMaker(binder, binder, paramType, paramType)(pos, extractorArgTypeTest = true)
+            val binderKnownNonNull = typeTest impliesBinderNonNull binder
+
+            // check whether typetest implies binder is not null,
+            // even though the eventual null check will be on typeTest.nextBinder
+            // it'll be equal to binder casted to paramType anyway (and the type test is on binder)
+            typeTest :: treeMaker(typeTest.nextBinder, binderKnownNonNull, pos) :: Nil
+          }
+        }
+
         step(makers: _*)(extractor.subBoundTrees: _*)
       }
 
@@ -248,7 +252,7 @@ trait MatchTranslation {
       if (caseDefs forall treeInfo.isCatchCase) caseDefs
       else {
         val swatches = { // switch-catches
-          // SI-7459 must duplicate here as we haven't commited to switch emission, and just figuring out
+          // SI-7459 must duplicate here as we haven't committed to switch emission, and just figuring out
           //         if we can ends up mutating `caseDefs` down in the use of `substituteSymbols` in
           //         `TypedSubstitution#Substitution`. That is called indirectly by `emitTypeSwitch`.
           val bindersAndCases = caseDefs.map(_.duplicate) map { caseDef =>
@@ -504,14 +508,26 @@ trait MatchTranslation {
        */
       def treeMaker(binder: Symbol, binderKnownNonNull: Boolean, pos: Position): TreeMaker = {
         val paramAccessors = binder.constrParamAccessors
+        val numParams = paramAccessors.length
+        def paramAccessorAt(subPatIndex: Int) = paramAccessors(math.min(subPatIndex, numParams - 1))
         // binders corresponding to mutable fields should be stored (SI-5158, SI-6070)
         // make an exception for classes under the scala package as they should be well-behaved,
         // to optimize matching on List
+        val hasRepeated = paramAccessors.lastOption match {
+          case Some(x) => definitions.isRepeated(x)
+          case _ => false
+        }
         val mutableBinders = (
           if (!binder.info.typeSymbol.hasTransOwner(ScalaPackageClass) &&
-              (paramAccessors exists (_.isMutable)))
-            subPatBinders.zipWithIndex.collect{ case (binder, idx) if paramAccessors(idx).isMutable => binder }
-          else Nil
+              (paramAccessors exists (x => x.isMutable || definitions.isRepeated(x)))) {
+
+            subPatBinders.zipWithIndex.flatMap {
+              case (binder, idx) =>
+                val param = paramAccessorAt(idx)
+                if (param.isMutable || (definitions.isRepeated(param) && !aligner.isStar)) binder :: Nil
+                else Nil
+            }
+          } else Nil
         )
 
         // checks binder ne null before chaining to the next extractor
